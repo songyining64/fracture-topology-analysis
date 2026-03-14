@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境（别人用 requirements.txt 自己建环境）
+envs/
+
+# 缓存与临时文件
+.cache/
+*.log
+.DS_Store
+
+# IDE（可选：若想提交 .idea 配置可删下面两行）
+.idea/
+
+# fractopo 运行缓存
+.fractopo_cache/
+
+# 大文件或生成结果（若不想上传可取消注释）
+# *.csv
+# *.pdf
+# *.png
