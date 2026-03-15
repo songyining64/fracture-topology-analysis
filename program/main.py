@@ -2,6 +2,11 @@ import math
 import sys
 import os
 
+# 保证 program 目录在 path 中，便于从项目根或 program 运行时的导入（feature_engineering、ml.train、evaluation）
+_PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
 # Mac 上 PyQt5 找不到 cocoa 插件时（必须在 import PyQt5 之前设置）
 if sys.platform == "darwin":
     for p in sys.path:
@@ -19,6 +24,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QVBoxLayout,
 )
 from fractopo.branches_and_nodes import branches_and_nodes
 
@@ -142,6 +148,179 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton_ronghe.clicked.connect(self.run_ronghe)
         self._set_ronghe_combo_tooltip()
         self.combo_ronghe.currentIndexChanged.connect(self._set_ronghe_combo_tooltip)
+        # 国奖：属性融合 + ML 预测 + 可视化（不含性能分析）
+        self.frame_guoji = QFrame(self.frame_5)
+        self.frame_guoji.setFrameShape(QFrame.StyledPanel)
+        self.frame_guoji.setFrameShadow(QFrame.Raised)
+        self.layout_guoji = QVBoxLayout(self.frame_guoji)
+        self.label_guoji = QLabel(self.frame_guoji)
+        self.label_guoji.setText("属性融合与 ML 预测")
+        self.layout_guoji.addWidget(self.label_guoji)
+        self.layout_guoji_btns = QHBoxLayout()
+        self.btn_guoji_fusion = QPushButton(self.frame_guoji)
+        self.btn_guoji_fusion.setText("加权融合")
+        self.btn_guoji_fusion.setToolTip("高价值属性加权得到勘探价值得分，结果写右侧文本框")
+        self.layout_guoji_btns.addWidget(self.btn_guoji_fusion)
+        self.btn_guoji_compare = QPushButton(self.frame_guoji)
+        self.btn_guoji_compare.setText("融合对比(加权vsGAT)")
+        self.btn_guoji_compare.setToolTip("加权融合 vs GAT 融合得分分布箱线图（需 torch+torch_geometric）")
+        self.layout_guoji_btns.addWidget(self.btn_guoji_compare)
+        self.btn_guoji_train = QPushButton(self.frame_guoji)
+        self.btn_guoji_train.setText("训练 XGBoost")
+        self.btn_guoji_train.setToolTip("5折CV+测试集训练，模型保存到 model/，结果写右侧")
+        self.layout_guoji_btns.addWidget(self.btn_guoji_train)
+        self.btn_guoji_shap = QPushButton(self.frame_guoji)
+        self.btn_guoji_shap.setText("SHAP 可解释")
+        self.btn_guoji_shap.setToolTip("特征贡献占比与 summary 图（需先训练过模型）")
+        self.layout_guoji_btns.addWidget(self.btn_guoji_shap)
+        self.layout_guoji.addLayout(self.layout_guoji_btns)
+        self.verticalLayout_4.insertWidget(1, self.frame_guoji)
+        self.btn_guoji_fusion.clicked.connect(self.run_guoji_weighted_fusion)
+        self.btn_guoji_compare.clicked.connect(self.run_guoji_fusion_compare)
+        self.btn_guoji_train.clicked.connect(self.run_guoji_train)
+        self.btn_guoji_shap.clicked.connect(self.run_guoji_shap)
+
+    def _get_guoji_csv(self):
+        csv_name = "Yingmai 2 area in Tarim Basin.csv"
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_name)
+        if not os.path.isfile(csv_path):
+            QMessageBox.warning(self, "未找到数据", f"未找到：{csv_name}\n请先运行 data export.py 或将该文件放在 program 目录。")
+            return None
+        return csv_path
+
+    def run_guoji_weighted_fusion(self):
+        try:
+            from fusion_algorithm import run_weighted_fusion_pipeline
+        except ImportError:
+            QMessageBox.warning(self, "模块未安装", "请确保 fusion_algorithm、feature_engineering 可用，并安装 scikit-learn。")
+            return
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        warnings.filterwarnings("ignore")
+        try:
+            df = run_weighted_fusion_pipeline(csv_path)
+            mean_s = df["weighted_fusion_score"].mean()
+            std_s = df["weighted_fusion_score"].std()
+            txt = "【加权融合结果】\n\n"
+            txt += f"样本数：{len(df)}\n"
+            txt += f"融合得分 均值：{mean_s:.4f}  标准差：{std_s:.4f}\n"
+            txt += "\n前 5 行得分：\n" + df["weighted_fusion_score"].head().to_string()
+            self.textBrowser.clear()
+            self.textBrowser.insertPlainText(txt)
+            self.textBrowser.moveCursor(QTextCursor.End)
+            QMessageBox.information(self, "完成", "加权融合已运行，结果已显示在右侧文本框。")
+        except Exception as e:
+            QMessageBox.critical(self, "运行出错", str(e))
+
+    def run_guoji_fusion_compare(self):
+        try:
+            from fusion_algorithm import run_fusion_comparison_experiment
+        except ImportError:
+            QMessageBox.warning(self, "模块未安装", "请确保 fusion_algorithm、feature_engineering 可用。GAT 需 pip install torch torch_geometric。")
+            return
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        warnings.filterwarnings("ignore")
+        try:
+            out_dir = os.path.join(os.path.dirname(csv_path), "data", "processed")
+            res = run_fusion_comparison_experiment(csv_path, out_dir=out_dir, save_boxplot=True)
+            txt = "【融合对比：加权 vs GAT】\n\n"
+            txt += f"加权得分 均值：{res['weighted_scores'].mean():.4f}\n"
+            txt += f"GAT 得分 均值：{res['gat_scores'].mean():.4f}\n"
+            if res.get("boxplot_path") and os.path.isfile(res["boxplot_path"]):
+                txt += f"\n箱线图已保存：{res['boxplot_path']}\n"
+                plt.figure(figsize=(5, 4))
+                img = plt.imread(res["boxplot_path"])
+                plt.imshow(img)
+                plt.axis("off")
+                plt.tight_layout()
+                plt.show()
+            self.textBrowser.clear()
+            self.textBrowser.insertPlainText(txt)
+            self.textBrowser.moveCursor(QTextCursor.End)
+            QMessageBox.information(self, "完成", "融合对比已运行，箱线图已弹出。")
+        except Exception as e:
+            QMessageBox.critical(self, "运行出错", str(e))
+
+    def run_guoji_train(self):
+        try:
+            from feature_engineering import build_feature_matrix
+            from ml.train import train_xgboost_regression, save_model_report
+        except ImportError as e:
+            QMessageBox.warning(self, "模块未安装", f"请确保 feature_engineering、ml.train 可用，并安装 xgboost。\n{e}")
+            return
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        warnings.filterwarnings("ignore")
+        try:
+            r = build_feature_matrix(csv_path, out_processed_dir=None)
+            X, y = r["X"], r["y"]
+            if y is None:
+                y = r["X"][:, 0]
+            if len(X) < 10:
+                QMessageBox.warning(
+                    self, "样本过少",
+                    f"特征工程后有效样本仅 {len(X)} 个，至少需要约 10 个才能做 5 折 CV。请检查 CSV 或先运行 data export 生成完整网格数据。",
+                )
+                return
+            res = train_xgboost_regression(X, y, n_splits=5, test_size=0.1)
+            model_dir = os.path.join(os.path.dirname(csv_path), "model")
+            save_model_report(res, model_dir, name="xgboost_reg", feature_names=r.get("feature_names"))
+            txt = "【XGBoost 训练结果】\n\n"
+            txt += f"CV R² 均值：{res['cv_agg']['R2_mean']:.4f}\n"
+            txt += f"CV MAE 均值：{res['cv_agg']['MAE_mean']:.4f}\n"
+            txt += f"测试集 R²：{res['test_metrics']['R2']:.4f}\n"
+            txt += f"测试集 MAE：{res['test_metrics']['MAE']:.4f}\n"
+            txt += f"\n模型已保存：{model_dir}/xgboost_reg.json"
+            self.textBrowser.clear()
+            self.textBrowser.insertPlainText(txt)
+            self.textBrowser.moveCursor(QTextCursor.End)
+            QMessageBox.information(self, "完成", "训练完成，模型已保存至 model/。")
+        except Exception as e:
+            import traceback
+            err_detail = traceback.format_exc()
+            QMessageBox.critical(
+                self, "运行出错",
+                f"{str(e)}\n\n详细报错：\n{err_detail[-800:]}",
+            )
+
+    def run_guoji_shap(self):
+        try:
+            from ml.explain import explain_xgboost
+        except ImportError:
+            QMessageBox.warning(self, "模块未安装", "请确保 ml.explain 可用，并安装 shap。")
+            return
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        model_path = os.path.join(os.path.dirname(csv_path), "model", "xgboost_reg.json")
+        if not os.path.isfile(model_path):
+            QMessageBox.warning(self, "请先训练", "未找到 model/xgboost_reg.json，请先点击「训练 XGBoost」。")
+            return
+        warnings.filterwarnings("ignore")
+        try:
+            out_dir = os.path.join(os.path.dirname(csv_path), "model")
+            df_imp = explain_xgboost(model_path, csv_path, out_dir=out_dir)
+            txt = "【SHAP 特征贡献占比】\n\n"
+            txt += df_imp.head(10).to_string()
+            txt += "\n\n（summary 图已保存至 model/shap_summary.png）"
+            self.textBrowser.clear()
+            self.textBrowser.insertPlainText(txt)
+            self.textBrowser.moveCursor(QTextCursor.End)
+            shap_png = os.path.join(out_dir, "shap_summary.png")
+            if os.path.isfile(shap_png):
+                plt.figure(figsize=(7, 5))
+                img = plt.imread(shap_png)
+                plt.imshow(img)
+                plt.axis("off")
+                plt.tight_layout()
+                plt.show()
+            QMessageBox.information(self, "完成", "SHAP 可解释已运行，特征贡献与图已显示。")
+        except Exception as e:
+            QMessageBox.critical(self, "运行出错", str(e))
 
     def _set_ronghe_combo_tooltip(self):
         lines = ["融合方式："]

@@ -11,6 +11,8 @@ build/
 
 # 虚拟环境（别人用 requirements.txt 自己建环境）
 envs/
+venv_mac/
+venv/
 
 # 缓存与临时文件
 .cache/
@@ -27,3 +29,5 @@ envs/
 # *.csv
 # *.pdf
 # *.png
+program/data/
+program/model/

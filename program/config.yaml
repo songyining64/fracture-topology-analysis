@@ -1,0 +1,35 @@
+# 国奖任务统一配置（避免硬编码）
+# 高价值属性列（勘探价值导向，融合时赋更高权重）
+high_value_attrs:
+  - "Connections per Branch"
+  - "Connections per Trace"
+  - "Connection Frequency"
+
+# 特征工程
+feature_engineering:
+  normalize_method: "standard"   # standard | minmax
+  outlier_method: "iqr"         # iqr | zscore
+  variance_threshold: 1.0e-6
+  n_select_mi: 10               # 互信息筛选 TopK，null 表示不筛
+
+# 融合
+fusion:
+  high_value_weight: 1.5
+
+# 训练与验证
+train:
+  n_splits: 5
+  test_size: 0.1
+  random_state: 42
+
+# 调参（Optuna）
+tune:
+  n_trials: 30
+  timeout_minutes: 30
+
+# 行业指标（示例，可替换为实际测算）
+industry:
+  time_baseline: 10.0   # 传统分析耗时（小时）
+  time_fusion: 4.0
+  cost_baseline: 1.0
+  cost_optimized: 0.8

@@ -6,9 +6,21 @@ matplotlib>=3.5
 scipy>=1.9
 pandas>=1.4
 numpy>=1.21
+scikit-learn>=1.0
+PyYAML>=6.0
 ternary
 powerlaw
 pyshp
 scikit-image
 opencv-python
 networkx
+
+# 任务1&2：智能融合与 ML（国奖闭环）
+xgboost>=1.6
+optuna>=3.0
+shap>=0.42
+
+# 可选：自编码器/VAE/UMAP/GAT
+# pip install torch
+# pip install umap-learn
+# pip install torch_geometric

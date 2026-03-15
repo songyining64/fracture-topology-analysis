@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+"""
+可解释性：SHAP 特征重要性（如「连通率对渗透率预测的贡献占比 35%」），答辩时可直观讲清模型逻辑。
+"""
+import os
+import sys
+import numpy as np
+import pandas as pd
+from typing import Optional, List
+
+_PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
+
+def shap_feature_importance(
+    model,
+    X: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    is_tree: bool = True,
+    out_plot_path: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    计算 SHAP 特征重要性，返回每特征 mean(|SHAP|) 及占比。
+    is_tree=True 时用 TreeExplainer（XGBoost/LightGBM），否则用 KernelExplainer（较慢）。
+    """
+    try:
+        import shap
+    except ImportError:
+        raise ImportError("请安装 shap: pip install shap")
+    if feature_names is None:
+        feature_names = [f"f{i}" for i in range(X.shape[1])]
+    if is_tree:
+        explainer = shap.TreeExplainer(model, X)
+        shap_values = explainer.shap_values(X)
+    else:
+        explainer = shap.KernelExplainer(model.predict, X[: min(100, len(X))])
+        shap_values = explainer.shap_values(X)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[0]
+    importance = np.abs(shap_values).mean(axis=0)
+    total = importance.sum()
+    pct = (importance / total * 100) if total > 0 else np.zeros_like(importance)
+    df = pd.DataFrame({
+        "feature": feature_names,
+        "importance": importance,
+        "contribution_pct": pct,
+    }).sort_values("importance", ascending=False)
+    if out_plot_path:
+        os.makedirs(os.path.dirname(out_plot_path) or ".", exist_ok=True)
+        shap.summary_plot(shap_values, X, feature_names=feature_names, show=False)
+        import matplotlib.pyplot as plt
+        plt.savefig(out_plot_path, bbox_inches="tight", dpi=150)
+        plt.close()
+    return df
+
+
+def shap_dependence_plot(
+    model,
+    X: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    top_feature_index: int = 0,
+    save_path: Optional[str] = None,
+) -> None:
+    """SHAP 依赖图：关键特征与 SHAP 值的关系，答辩时展示单特征贡献。"""
+    try:
+        import shap
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise ImportError("请安装 shap: pip install shap")
+    if feature_names is None:
+        feature_names = [f"f{i}" for i in range(X.shape[1])]
+    explainer = shap.TreeExplainer(model, X)
+    shap_values = explainer.shap_values(X)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[0]
+    plt.figure(figsize=(6, 4))
+    shap.dependence_plot(
+        top_feature_index,
+        shap_values,
+        X,
+        feature_names=feature_names,
+        show=False,
+    )
+    plt.tight_layout()
+    if save_path:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        plt.savefig(save_path, bbox_inches="tight", dpi=150)
+        plt.close()
+    else:
+        plt.show()
+
+
+def explain_xgboost(
+    model_path: str,
+    csv_path: str,
+    is_classifier: bool = False,
+    feature_columns: Optional[List[str]] = None,
+    out_dir: Optional[str] = None,
+) -> pd.DataFrame:
+    """加载 XGBoost 模型与数据，输出 SHAP 特征重要性表与可选图。"""
+    try:
+        from .infer import load_xgboost_model
+    except ImportError:
+        from infer import load_xgboost_model
+    from feature_engineering import build_feature_matrix
+    model = load_xgboost_model(model_path, is_classifier=is_classifier)
+    r = build_feature_matrix(csv_path, feature_columns=feature_columns, out_processed_dir=None)
+    X, names = r["X"], r["feature_names"]
+    out_plot = os.path.join(out_dir, "shap_summary.png") if out_dir else None
+    df_imp = shap_feature_importance(model, X, feature_names=names, is_tree=True, out_plot_path=out_plot)
+    return df_imp
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    model_dir = os.path.join(_PROGRAM_DIR, "model")
+    path = os.path.join(model_dir, "xgboost_reg.json")
+    csv_path = os.path.join(_PROGRAM_DIR, "Yingmai 2 area in Tarim Basin.csv")
+    if not os.path.isfile(path) or not os.path.isfile(csv_path):
+        print("请先运行 train.py 并确保 CSV 存在。")
+        sys.exit(1)
+    df = explain_xgboost(path, csv_path, out_dir=model_dir)
+    print("特征贡献占比（示例）：")
+    print(df.head(10).to_string())
+    if os.path.exists(os.path.join(model_dir, "shap_summary.png")):
+        print("SHAP 图已保存至 model/shap_summary.png")
