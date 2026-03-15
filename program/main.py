@@ -1,6 +1,25 @@
 import math
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow
+import os
+
+# Mac 上 PyQt5 找不到 cocoa 插件时（必须在 import PyQt5 之前设置）
+if sys.platform == "darwin":
+    for p in sys.path:
+        qt_plugin_path = os.path.join(p, "PyQt5", "Qt5", "plugins", "platforms")
+        if os.path.exists(qt_plugin_path):
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugin_path
+            break
+
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QMessageBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+)
 from fractopo.branches_and_nodes import branches_and_nodes
 
 from pprint import pprint
@@ -16,6 +35,32 @@ import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 import numpy as np
 from PyQt5.QtGui import QTextCursor
+
+try:
+    from topology_fusion import (
+        run_fusion_pipeline,
+        run_fusion_pipeline_ae,
+        run_fusion_pipeline_umap,
+        run_fusion_pipeline_vae,
+    )
+except ImportError:
+    run_fusion_pipeline = None
+    run_fusion_pipeline_ae = None
+    run_fusion_pipeline_umap = None
+    run_fusion_pipeline_vae = None
+
+try:
+    import torch as _torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+try:
+    import umap as _umap
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+
+warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
 # trace_data_url = "KB11/KB11_traces.geojson"
 # area_data_url = "KB11/KB11_area.geojson"
@@ -76,6 +121,34 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton.clicked.connect(self.a)
         self.pushButton_5.clicked.connect(self.b)
         self.opt = 0
+        # 智能拓扑分析（属性融合）
+        self.frame_ronghe = QFrame(self.frame_5)
+        self.frame_ronghe.setFrameShape(QFrame.StyledPanel)
+        self.frame_ronghe.setFrameShadow(QFrame.Raised)
+        self.layout_ronghe = QHBoxLayout(self.frame_ronghe)
+        self.pushButton_ronghe = QPushButton(self.frame_ronghe)
+        self.pushButton_ronghe.setMinimumSize(250, 50)
+        self.pushButton_ronghe.setMaximumSize(250, 50)
+        self.pushButton_ronghe.setText("智能拓扑分析（属性融合）")
+        self.layout_ronghe.addWidget(self.pushButton_ronghe)
+        self.combo_ronghe = QComboBox(self.frame_ronghe)
+        self.combo_ronghe.addItems(["PCA", "自编码器", "UMAP", "VAE"])
+        self.layout_ronghe.addWidget(self.combo_ronghe)
+        self.label_ronghe = QLabel(self.frame_ronghe)
+        self.label_ronghe.setWordWrap(True)
+        self.label_ronghe.setText("将多个高级拓扑属性通过 PCA/自编码器/UMAP/VAE 融合并聚类，展示散点图与统计说明。")
+        self.layout_ronghe.addWidget(self.label_ronghe)
+        self.verticalLayout_4.insertWidget(0, self.frame_ronghe)
+        self.pushButton_ronghe.clicked.connect(self.run_ronghe)
+        self._set_ronghe_combo_tooltip()
+        self.combo_ronghe.currentIndexChanged.connect(self._set_ronghe_combo_tooltip)
+
+    def _set_ronghe_combo_tooltip(self):
+        lines = ["融合方式："]
+        lines.append("• PCA：直接可用")
+        lines.append("• 自编码器/VAE：需 pip install torch" if not HAS_TORCH else "• 自编码器/VAE：已安装 torch")
+        lines.append("• UMAP：需 pip install umap-learn" if not HAS_UMAP else "• UMAP：已安装 umap-learn")
+        self.combo_ronghe.setToolTip("\n".join(lines))
 
     def onIndexChanged(self, index):
         self.opt = index
@@ -364,6 +437,36 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.savefig('plot1.pdf')
         plt.show()
 
+    def _plot_contour_safe(self, network, sampled_grid, parameters):
+        """绘制轮廓图；若因地理 CRS 导致 aspect 报错，则用副本临时去掉 CRS 再画。"""
+        if isinstance(parameters, str):
+            parameters = [parameters]
+        for param in parameters:
+            if param not in sampled_grid.columns:
+                continue
+            try:
+                network.plot_contour(parameter=param, sampled_grid=sampled_grid)
+                fig = plt.gcf()
+                for ax in fig.axes:
+                    ax.grid(False)
+                plt.show()
+            except ValueError as e:
+                if "aspect" not in str(e) and "finite and positive" not in str(e):
+                    raise
+                fig, ax = plt.subplots(figsize=(8, 8))
+                ax.grid(False)
+                grid_plot = sampled_grid.copy()
+                crs_orig = grid_plot.crs
+                grid_plot.crs = None
+                try:
+                    grid_plot.plot(column=param, ax=ax, legend=True, legend_kwds={"label": param})
+                finally:
+                    grid_plot.crs = crs_orig
+                ax.set_aspect("equal")
+                ax.set_title(f"{name} - {param}")
+                plt.tight_layout()
+                plt.show()
+
     def run_lunkuo(self):
         warnings.filterwarnings("ignore")
         print(self.opt)
@@ -376,33 +479,116 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-        sampled_grid = network.contour_grid(cell_width=1000)
+        sampled_grid = network.contour_grid(cell_width=1000.0)
         if self.opt == 1:
-            network.plot_contour(parameter="Fracture Intensity B21", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Fracture Intensity P21", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
         elif self.opt == 2:
-            network.plot_contour(parameter="Trace Min Length", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Trace Max Length", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Trace Mean Length", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Trace Min Length", "Trace Max Length", "Trace Mean Length"])
         elif self.opt == 3:
-            network.plot_contour(parameter="Dimensionless Intensity B22", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Dimensionless Intensity P22", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Dimensionless Intensity B22", "Dimensionless Intensity P22"])
         elif self.opt == 4:
-            network.plot_contour(parameter="Number of Traces (Real)", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, "Number of Traces (Real)")
         elif self.opt == 5:
-            network.plot_contour(parameter="Branch Min Length", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Branch Max Length", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Branch Mean Length", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Branch Min Length", "Branch Max Length", "Branch Mean Length"])
         elif self.opt == 6:
-            network.plot_contour(parameter="Areal Frequency B20", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Areal Frequency P20", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Areal Frequency B20", "Areal Frequency P20"])
         elif self.opt == 7:
-            network.plot_contour(parameter="Connections per Trace", sampled_grid=sampled_grid)
-            network.plot_contour(parameter="Connections per Branch", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, ["Connections per Trace", "Connections per Branch"])
         elif self.opt == 8:
-            network.plot_contour(parameter="Connection Frequency", sampled_grid=sampled_grid)
+            self._plot_contour_safe(network, sampled_grid, "Connection Frequency")
+
+    def run_ronghe(self):
+        if run_fusion_pipeline is None:
+            QMessageBox.warning(
+                self, "模块未安装",
+                "请确保 topology_fusion 模块可用（与 main.py 同目录），并已安装 scikit-learn。",
+            )
+            return
+        method = self.combo_ronghe.currentText()
+        if method in ("自编码器", "VAE") and not HAS_TORCH:
+            QMessageBox.warning(
+                self, "需要安装 PyTorch",
+                f"「{method}」依赖 PyTorch。请执行：pip install torch\n或先选择 PCA/UMAP。",
+            )
+            return
+        if method == "UMAP" and not HAS_UMAP:
+            QMessageBox.warning(
+                self, "需要安装 umap-learn",
+                "「UMAP」依赖 umap-learn。请执行：pip install umap-learn\n或先选择 PCA。",
+            )
+            return
+        csv_name = "Yingmai 2 area in Tarim Basin.csv"
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_name)
+        if not os.path.isfile(csv_path):
+            QMessageBox.warning(
+                self, "未找到数据",
+                f"未找到：{csv_name}\n请先运行 data export.py 或将该文件放在 program 目录下。",
+            )
+            return
+        warnings.filterwarnings("ignore")
+        try:
+            if method == "自编码器":
+                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_ae(
+                    csv_path, n_latent=2, n_clusters=4, ae_epochs=100
+                )
+                x_col, y_col = "Z1", "Z2"
+                method_name = "自编码器"
+            elif method == "UMAP":
+                df_out, scaler, _, kmeans, cluster_means = run_fusion_pipeline_umap(
+                    csv_path, n_components=2, n_clusters=4, n_neighbors=15
+                )
+                x_col, y_col = "U1", "U2"
+                method_name = "UMAP"
+            elif method == "VAE":
+                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_vae(
+                    csv_path, n_latent=2, n_clusters=4, vae_epochs=150
+                )
+                x_col, y_col = "Z1", "Z2"
+                method_name = "VAE"
+            else:
+                df_out, scaler, pca, kmeans, cluster_means = run_fusion_pipeline(
+                    csv_path, n_components=2, n_clusters=4
+                )
+                x_col, y_col = "PC1", "PC2"
+                method_name = "PCA"
+        except Exception as e:
+            QMessageBox.critical(self, "运行出错", f"属性融合或聚类时出错：\n{str(e)}")
+            return
+        n_samples = len(df_out)
+        n_clusters = int(df_out["cluster_id"].max()) + 1
+        fig1, ax1 = plt.subplots(figsize=(7, 6))
+        ax1.grid(False)
+        scatter = ax1.scatter(
+            df_out[x_col], df_out[y_col],
+            c=df_out["cluster_id"], cmap="tab10", s=15, alpha=0.8,
+        )
+        ax1.set_xlabel(x_col)
+        ax1.set_ylabel(y_col)
+        ax1.set_title(f"拓扑属性融合（{method_name}）：{x_col}–{y_col}（颜色=聚类类型）")
+        plt.colorbar(scatter, ax=ax1, label="cluster_id")
+        ax1.set_aspect("equal", adjustable="datalim")
         plt.tight_layout()
         plt.show()
+        summary_lines = [
+            "【智能拓扑分析结果】",
+            "",
+            f"融合方式：{method_name}",
+            f"数据：{csv_name}",
+            f"有效网格数：{n_samples}",
+            f"聚类数：{n_clusters}",
+            f"新属性：{x_col}, {y_col}, cluster_id",
+            "",
+            "各簇在部分拓扑属性上的均值：",
+            "",
+            cluster_means.head(4).to_string(),
+        ]
+        self.textBrowser.clear()
+        self.textBrowser.insertPlainText("\n".join(summary_lines))
+        self.textBrowser.moveCursor(QTextCursor.End)
+        QMessageBox.information(
+            self, "运行完成",
+            f"已用 {method_name} 生成 {x_col}、{y_col} 与 {n_clusters} 类聚类结果。",
+        )
 
 
 if __name__ == '__main__':
