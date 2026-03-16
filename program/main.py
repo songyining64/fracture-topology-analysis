@@ -68,16 +68,16 @@ except ImportError:
 
 warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
-# trace_data_url = "KB11/KB11_traces.geojson"
-# area_data_url = "KB11/KB11_area.geojson"
-# traces = gpd.read_file(trace_data_url)
-# area = gpd.read_file(area_data_url)
-# name = "KB11"
-
-trace_data_url = "THK/thkceshi-landmark1.geojson"
-area_data_url = "THK/my_area.geojson"
+trace_data_url = "KB11/KB11_traces.geojson"
+area_data_url = "KB11/KB11_area.geojson"
 traces = gpd.read_file(trace_data_url)
 area = gpd.read_file(area_data_url)
+name = "KB11"
+
+# trace_data_url = "THK/thkceshi-landmark1.geojson"
+# area_data_url = "THK/my_area.geojson"
+# traces = gpd.read_file(trace_data_url)
+# area = gpd.read_file(area_data_url)
 traces.drop_duplicates(subset="geometry", inplace=True)
 traces.reset_index(drop=True, inplace=True)
 name = "Yingmai 2 area in Tarim Basin"
@@ -114,6 +114,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self, parent=None):
         super(MainWindow, self).__init__(parent)
         self.setupUi(self)
+        # 启动时根据屏幕大小设置一个合适的默认尺寸，保留拖动边框，方便用户上下左右自由调整
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            # 初始大小占可用区域的 90%，避免一开始就“锁死”在最大化状态
+            self.resize(int(geo.width() * 0.9), int(geo.height() * 0.9))
+        # 给一个合理的最小尺寸，防止拖得太小导致布局完全挤乱
+        self.setMinimumSize(800, 600)
         self.pushButton_3.clicked.connect(self.run_yuantu)
         self.pushButton_2.clicked.connect(self.run_fenleihou)
         self.pushButton_8.clicked.connect(self.run_relitu)
@@ -609,7 +617,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             area.boundary.plot(ax=ax, color="red")
             ax.set_aspect('equal')
         legend = axes[1].get_legend()
-        for handle in legend.legendHandles:
+        for handle in legend.legend_handles:
             handle._sizes = [20]
         legend.set_bbox_to_anchor((1, 0.5))
         plt.tight_layout()
