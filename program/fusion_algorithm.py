@@ -16,6 +16,11 @@ HIGH_VALUE_ATTRS = [
 DEFAULT_HIGH_VALUE_WEIGHT = 1.5
 
 
+def _validate_feature_alignment(X: np.ndarray, feature_names: List[str]) -> None:
+    if X.shape[1] != len(feature_names):
+        raise ValueError(f"特征矩阵列数 {X.shape[1]} 与特征名数量 {len(feature_names)} 不一致。")
+
+
 def weighted_fusion(
     X: np.ndarray,
     feature_names: List[str],
@@ -26,6 +31,7 @@ def weighted_fusion(
     基础版：加权融合。对 HIGH_VALUE_ATTRS 中的列赋更高权重，得到一维「勘探价值」得分（或保持多维）。
     返回：每个样本一个标量得分，形状 (n_samples,)。
     """
+    _validate_feature_alignment(X, feature_names)
     if high_value_attrs is None:
         high_value_attrs = HIGH_VALUE_ATTRS
     w = np.ones(X.shape[1], dtype=np.float64)
@@ -78,6 +84,80 @@ def build_grid_graph(
                     edges.append((idx, j))
     edge_index = np.array(edges, dtype=np.int64).T if edges else np.zeros((2, 0), dtype=np.int64)
     return edge_index, np.arange(n, dtype=np.int64)
+
+
+def adaptive_weighted_fusion(
+    X: np.ndarray,
+    feature_names: List[str],
+    context_features: Optional[np.ndarray] = None,
+    hidden_dim: int = 32,
+    epochs: int = 200,
+    lr: float = 1e-3,
+    device: Optional[str] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    进阶版：可学习的加权策略（Adaptive Feature Weighting）。
+
+    思路：
+    - 用一个小型 MLP 根据样本的上下文特征（context_features，默认=原始 X）
+      预测一组「特征权重」w_i（通过 softmax 约束为正且和为 1）；
+    - 对每个样本做自适应加权得分：score = sum_i w_i * x_i；
+    - 训练目标：score 逼近 X 中的某个高价值统计（这里采用所有特征的简单均值，
+      主要目的是让网络学到“哪些特征更重要”的模式；真实场景可替换为业务标签）。
+
+    返回：
+        scores: 形状 (n_samples,) 的自适应融合得分
+        weights_mean: 形状 (n_features,) 的平均特征权重（可视化用）
+    """
+    _validate_feature_alignment(X, feature_names)
+    try:
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+    except ImportError:
+        raise ImportError("adaptive_weighted_fusion 需要 PyTorch：pip install torch")
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    n_samples, n_features = X.shape
+    if context_features is None:
+        context_features = X
+    if context_features.shape[0] != n_samples:
+        raise ValueError("context_features 与 X 的样本数不一致。")
+    ctx_dim = context_features.shape[1]
+    x_t = torch.tensor(X, dtype=torch.float32, device=device)
+    ctx_t = torch.tensor(context_features, dtype=torch.float32, device=device)
+
+    class WeightNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(ctx_dim, hidden_dim)
+            self.fc2 = nn.Linear(hidden_dim, n_features)
+
+        def forward(self, ctx):
+            h = F.relu(self.fc1(ctx))
+            w_logits = self.fc2(h)
+            w = F.softmax(w_logits, dim=-1)
+            return w
+
+    net = WeightNet().to(device)
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    # 这里构造一个“软标签”：所有特征简单均值得分，作为回归目标
+    target = x_t.mean(dim=1, keepdim=True)
+    for _ in range(epochs):
+        net.train()
+        opt.zero_grad()
+        w = net(ctx_t)  # (n_samples, n_features)
+        score = (w * x_t).sum(dim=1, keepdim=True)
+        loss = F.mse_loss(score, target)
+        loss.backward()
+        opt.step()
+    net.eval()
+    with torch.no_grad():
+        w = net(ctx_t)
+        score = (w * x_t).sum(dim=1)
+    scores = score.cpu().numpy()
+    weights_mean = w.mean(dim=0).cpu().numpy()
+    return scores, weights_mean
 
 
 def gat_fusion(

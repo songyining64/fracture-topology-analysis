@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QInputDialog,
 )
 from fractopo.branches_and_nodes import branches_and_nodes
 
@@ -156,7 +157,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton_ronghe.clicked.connect(self.run_ronghe)
         self._set_ronghe_combo_tooltip()
         self.combo_ronghe.currentIndexChanged.connect(self._set_ronghe_combo_tooltip)
-        # 国奖：属性融合 + ML 预测 + 可视化（不含性能分析）
+        # 属性融合 + ML 预测 + 可视化（不含性能分析）
         self.frame_guoji = QFrame(self.frame_5)
         self.frame_guoji.setFrameShape(QFrame.StyledPanel)
         self.frame_guoji.setFrameShadow(QFrame.Raised)
@@ -173,6 +174,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.btn_guoji_compare.setText("融合对比(加权vsGAT)")
         self.btn_guoji_compare.setToolTip("加权融合 vs GAT 融合得分分布箱线图（需 torch+torch_geometric）")
         self.layout_guoji_btns.addWidget(self.btn_guoji_compare)
+        self.btn_spatial_framework = QPushButton(self.frame_guoji)
+        self.btn_spatial_framework.setText("空间-拓扑融合分析")
+        self.btn_spatial_framework.setToolTip("一键运行：特征工程 + 属性融合 + GAT 图建模 + XGBoost 预测 + SHAP 解释。")
+        self.layout_guoji_btns.addWidget(self.btn_spatial_framework)
         self.btn_guoji_train = QPushButton(self.frame_guoji)
         self.btn_guoji_train.setText("训练 XGBoost")
         self.btn_guoji_train.setToolTip("5折CV+测试集训练，模型保存到 model/，结果写右侧")
@@ -185,6 +190,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.verticalLayout_4.insertWidget(1, self.frame_guoji)
         self.btn_guoji_fusion.clicked.connect(self.run_guoji_weighted_fusion)
         self.btn_guoji_compare.clicked.connect(self.run_guoji_fusion_compare)
+        self.btn_spatial_framework.clicked.connect(self.run_spatial_topology_framework)
         self.btn_guoji_train.clicked.connect(self.run_guoji_train)
         self.btn_guoji_shap.clicked.connect(self.run_guoji_shap)
 
@@ -329,6 +335,78 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QMessageBox.information(self, "完成", "SHAP 可解释已运行，特征贡献与图已显示。")
         except Exception as e:
             QMessageBox.critical(self, "运行出错", str(e))
+
+    def run_spatial_topology_framework(self):
+        """一键运行空间-拓扑融合学习框架：特征工程 + 融合 + XGBoost + SHAP。"""
+        try:
+            from spatial_topology_framework import run_spatial_topology_fusion_pipeline
+        except ImportError as e:
+            QMessageBox.warning(
+                self,
+                "模块未安装",
+                f"请确保 spatial_topology_framework.py、feature_engineering、fusion_algorithm、ml 可用。\n{e}",
+            )
+            return
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        # 让用户输入要预测的目标列名，避免在界面里写死字段
+        target_column, ok = QInputDialog.getText(
+            self,
+            "目标列名",
+            "请输入要预测的目标列（例如 Porosity）：",
+            text="Porosity",
+        )
+        if not ok or not target_column:
+            return
+        import warnings as _warnings
+
+        _warnings.filterwarnings("ignore")
+        try:
+            res = run_spatial_topology_fusion_pipeline(
+                csv_path=csv_path,
+                target_column=target_column,
+            )
+            xgb_res = res.get("xgb_result", {})
+            cv_agg = xgb_res.get("cv_agg", {})
+            test_metrics = xgb_res.get("test_metrics", {})
+            shap_df = res.get("shap_importance")
+            txt = "【空间-拓扑融合分析】\n\n"
+            txt += f"目标列：{target_column}\n"
+            if cv_agg:
+                txt += "\n交叉验证（CV）指标：\n"
+                if "R2_mean" in cv_agg:
+                    txt += f"  R² 均值：{cv_agg['R2_mean']:.4f}\n"
+                if "MAE_mean" in cv_agg:
+                    txt += f"  MAE 均值：{cv_agg['MAE_mean']:.4f}\n"
+                if "RMSE_mean" in cv_agg:
+                    txt += f"  RMSE 均值：{cv_agg['RMSE_mean']:.4f}\n"
+            if test_metrics:
+                txt += "\n测试集指标：\n"
+                if "R2" in test_metrics:
+                    txt += f"  R²：{test_metrics['R2']:.4f}\n"
+                if "MAE" in test_metrics:
+                    txt += f"  MAE：{test_metrics['MAE']:.4f}\n"
+                if "RMSE" in test_metrics:
+                    txt += f"  RMSE：{test_metrics['RMSE']:.4f}\n"
+            if shap_df is not None and not shap_df.empty:
+                top_k = shap_df.head(8)
+                txt += "\nTop 特征贡献（SHAP）：\n"
+                txt += top_k.to_string(index=False)
+                txt += "\n\n（完整 SHAP 图已保存至 data/processed/shap_summary.png 或 config 中指定目录）"
+            self.textBrowser.clear()
+            self.textBrowser.insertPlainText(txt)
+            self.textBrowser.moveCursor(QTextCursor.End)
+            QMessageBox.information(self, "完成", "空间-拓扑融合分析已运行，结果已显示在右侧文本框。")
+        except Exception as e:
+            import traceback as _tb
+
+            err_detail = _tb.format_exc()
+            QMessageBox.critical(
+                self,
+                "运行出错",
+                f"{str(e)}\n\n详细报错：\n{err_detail[-800:]}",
+            )
 
     def _set_ronghe_combo_tooltip(self):
         lines = ["融合方式："]
