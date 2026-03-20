@@ -156,26 +156,103 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.text_browser.setTextCursor(cursor)
         self.text_browser.ensureCursorVisible()
 
+    # ==========================================
+    # 核心：图片内嵌机制（支持多图画廊模式）
+    # ==========================================
+    def embed_figure(self, figs):
+        """传入单个 fig 或一个 fig 列表，生成可切换的画廊"""
+        if not isinstance(figs, list):
+            figs = [figs]  # 如果只传了一张图，自动转成列表
 
-    def embed_figure(self, fig, append=False):
-        """调用这个函数，传入 fig 对象，它就会把图安全地塞到右下角"""
-        if not append:
-            # 安全清除左侧画板的旧图
-            while self.canvas_layout.count():
-                item = self.canvas_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setParent(None)  # 先脱离父节点
-                    widget.deleteLater()  # 安全销毁
+        # 安全清除右侧画板的旧图和旧按钮
+        while self.canvas_layout.count():
+            item = self.canvas_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+            elif item.layout() is not None:
+                # 递归清除旧的画廊控制栏
+                layout = item.layout()
+                while layout.count():
+                    sub_item = layout.takeAt(0)
+                    sub_widget = sub_item.widget()
+                    if sub_widget is not None:
+                        sub_widget.setParent(None)
+                        sub_widget.deleteLater()
+                layout.deleteLater()
+
+        self.current_figs = figs
+        self.current_fig_idx = 0
+
+        # 1. 顶部控制栏 (只有多张图才显示)
+        if len(figs) > 1:
+            self.gallery_control_layout = QtWidgets.QHBoxLayout()
+            self.btn_prev_fig = QtWidgets.QPushButton("◀ 上一张")
+            self.btn_prev_fig.setStyleSheet(
+                "background-color: #2c3e50; color: white; font-weight: bold; border-radius: 4px;")
+            self.btn_prev_fig.setMinimumHeight(30)
+
+            self.lbl_fig_status = QtWidgets.QLabel(f"1 / {len(figs)}")
+            self.lbl_fig_status.setAlignment(QtCore.Qt.AlignCenter)
+            self.lbl_fig_status.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+
+            self.btn_next_fig = QtWidgets.QPushButton("下一张 ▶")
+            self.btn_next_fig.setStyleSheet(
+                "background-color: #2c3e50; color: white; font-weight: bold; border-radius: 4px;")
+            self.btn_next_fig.setMinimumHeight(30)
+
+            # 绑定上一张/下一张事件
+            self.btn_prev_fig.clicked.connect(self.show_prev_figure)
+            self.btn_next_fig.clicked.connect(self.show_next_figure)
+            self.gallery_control_layout.addWidget(self.btn_prev_fig)
+            self.gallery_control_layout.addWidget(self.lbl_fig_status, 1)
+            self.gallery_control_layout.addWidget(self.btn_next_fig)
+            self.canvas_layout.addLayout(self.gallery_control_layout)
+
+            # 2. 图片显示区 (存放当前的 Canvas)
+        self.canvas_display_layout = QtWidgets.QVBoxLayout()
+        self.canvas_layout.addLayout(self.canvas_display_layout)
+
+        # 显示第一张图
+        self._render_current_figure()
+
+    def show_prev_figure(self):
+        if self.current_fig_idx > 0:
+            self.current_fig_idx -= 1
+            self._render_current_figure()
+
+    def show_next_figure(self):
+        if self.current_fig_idx < len(self.current_figs) - 1:
+            self.current_fig_idx += 1
+            self._render_current_figure()
+
+    def _render_current_figure(self):
+        """渲染当前索引对应的图片"""
+        # 清除当前的 canvas
+        while self.canvas_display_layout.count():
+            item = self.canvas_display_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                    widget.setParent(None)
+                    widget.deleteLater()
+
+        fig = self.current_figs[self.current_fig_idx]
 
         # 生成新图板并带上官方放大镜工具栏
         canvas = FigureCanvas(fig)
         toolbar = NavigationToolbar(canvas, self)
 
-        # 塞入左侧区域
-        self.canvas_layout.addWidget(toolbar)
-        self.canvas_layout.addWidget(canvas)
+        self.canvas_display_layout.addWidget(toolbar)
+        self.canvas_display_layout.addWidget(canvas)
         canvas.draw()
+
+        # 更新文字和按钮状态
+        if len(self.current_figs) > 1:
+            self.lbl_fig_status.setText(f"第 {self.current_fig_idx + 1} 张 / 共 {len(self.current_figs)} 张")
+            self.btn_prev_fig.setEnabled(self.current_fig_idx > 0)
+            self.btn_next_fig.setEnabled(self.current_fig_idx < len(self.current_figs) - 1)
+
         QtWidgets.QApplication.processEvents()
 
 
@@ -609,13 +686,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-        fit, fig, ax = network.plot_trace_lengths()
+        fit, fig1, ax = network.plot_trace_lengths()
         # ax.set_aspect('equal')
-        fit, fig, ax = network.plot_branch_lengths()
+        fit, fig2, ax = network.plot_branch_lengths()
         # ax.set_aspect('equal')
-        # 注意：原main.py中a()方法画了两个图，会先后弹出。这里内嵌只会显示最后一个。
-        # 如果需要同时显示两个图，可能需要修改代码将两个子图合并到一个figure中，但这里只内嵌最后一个图。
-        self.embed_figure(plt.gcf())
+
+        self.embed_figure([fig1, fig2])
 
     def run_meiguitu(self):
         warnings.filterwarnings("ignore")
@@ -628,10 +704,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-        azimuth_bin_dict, fig, ax = network.plot_trace_azimuth()
-        azimuth_bin_dict, fig, ax = network.plot_branch_azimuth()
-        # 注意：原main.py中run_meiguitu()方法画了两个图，会先后弹出。这里内嵌只会显示最后一个。
-        self.embed_figure(plt.gcf())
+        azimuth_bin_dict, fig1, ax = network.plot_trace_azimuth()
+        azimuth_bin_dict, fig2, ax = network.plot_branch_azimuth()
+
+        self.embed_figure([fig1, fig2])
 
     def run_sanyuantu(self):
         warnings.filterwarnings("ignore")
@@ -650,8 +726,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fig2, ax2, tax2 = network.plot_branch()
         fig2.set_size_inches(9, 9)
         fig2.tight_layout()
-        # 注意：原main.py中run_sanyuantu()方法画了两个图，会先后弹出。这里内嵌只会显示最后一个。
-        self.embed_figure(plt.gcf())
+
+        self.embed_figure([fig1, fig2])
 
     def run_guanxi(self):
         warnings.filterwarnings("ignore")
@@ -662,9 +738,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         figs, fig_axes = network.plot_azimuth_crosscut_abutting_relationships()
         for fig in figs:
             fig.set_size_inches(15, 7)
-        # 注意：可能返回多个fig，这里只内嵌第一个
+
         if figs:
-            self.embed_figure(figs[0])
+            self.embed_figure(figs)
 
     def b(self):
         branches, nodes = branches_and_nodes(traces, area, snap_threshold=0.001)
