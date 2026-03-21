@@ -150,11 +150,19 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     # 劫持输出打印到左侧
     def append_text(self, text):
+        # 获取垂直滚动条
+        scrollbar = self.text_browser.verticalScrollBar()
+        # 判断当前滚动条是否在最底部（允许 10 像素的误差）
+        is_at_bottom = scrollbar.value() >= scrollbar.maximum() - 10
+
+        # 在末尾插入文本，但不强制拉动视角
         cursor = self.text_browser.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         cursor.insertText(text)
-        self.text_browser.setTextCursor(cursor)
-        self.text_browser.ensureCursorVisible()
+
+        # 只有当用户原本就在底部时，才跟随滚动
+        if is_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
 
     # ==========================================
     # 核心：图片内嵌机制（支持多图画廊模式）
@@ -766,34 +774,71 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.embed_figure(fig)
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):
-        """绘制轮廓图；若因地理 CRS 导致 aspect 报错，则用副本临时去掉 CRS 再画。"""
+        """绘制轮廓图；自带终极数据清洗与兜底引擎，防崩溃"""
+        import pandas as pd
+        import numpy as np
+
         if isinstance(parameters, str):
             parameters = [parameters]
+
         for param in parameters:
             if param not in sampled_grid.columns:
                 continue
+
+            # 1. 拷贝数据，不污染原始数据
+            grid_plot = sampled_grid.copy()
+
+            # 2. 物理驱魔，过滤掉所有无效或空的几何网格！
+            grid_plot = grid_plot[grid_plot.geometry.notna()]
+            grid_plot = grid_plot[~grid_plot.geometry.is_empty]
+            grid_plot = grid_plot[grid_plot.geometry.is_valid]
+
+            if grid_plot.empty:
+                print(f"⚠️ 参数 {param} 的有效网格为空，跳过绘制。")
+                continue
+
+            # 3. 清理数值列
+            grid_plot[param] = pd.to_numeric(grid_plot[param], errors='coerce')
+            grid_plot[param] = grid_plot[param].replace([np.inf, -np.inf], np.nan).fillna(0)
+
             try:
-                network.plot_contour(parameter=param, sampled_grid=sampled_grid, colorindex=0)
+                # 尝试官方绘制
+                network.plot_contour(parameter=param, sampled_grid=grid_plot, colorindex=0)
                 fig = plt.gcf()
                 for ax in fig.axes:
                     ax.grid(False)
-                self.embed_figure(fig)
-            except ValueError as e:
-                if "aspect" not in str(e) and "finite and positive" not in str(e):
-                    raise
-                fig, ax = plt.subplots(figsize=(8, 8))
-                ax.grid(False)
-                grid_plot = sampled_grid.copy()
-                crs_orig = grid_plot.crs
-                grid_plot.crs = None
+
+                # 兼容单图和画廊(列表)模式
                 try:
+                    self.embed_figure([fig])
+                except TypeError:
+                    self.embed_figure(fig)
+
+            except Exception as e:
+                # 【完美修复】：使用 print 触发左侧文本框输出，启用兜底强画逻辑
+                print(f"⚠️ 官方图表引擎轻微受阻，正启用兜底渲染引擎...")
+                try:
+                    fig, ax = plt.subplots(figsize=(8, 8))
+                    ax.grid(False)
+
+                    crs_orig = grid_plot.crs
+                    grid_plot.crs = None  # 临时剥离 CRS 防报错
                     grid_plot.plot(column=param, ax=ax, legend=True, legend_kwds={"label": param})
-                finally:
-                    grid_plot.crs = crs_orig
-                ax.set_aspect("equal")
-                ax.set_title(f"{name} - {param}")
-                plt.tight_layout()
-                self.embed_figure(fig)
+                    grid_plot.crs = crs_orig  # 恢复 CRS
+
+                    ax.set_aspect("equal")
+                    ax.set_title(f"Contour: {param}")
+                    plt.tight_layout()
+
+                    try:
+                        self.embed_figure([fig])
+                    except TypeError:
+                        self.embed_figure(fig)
+
+                    print(f"✅ 兜底绘制成功：{param}")
+                except Exception as e2:
+                    print(f"❌ 终极兜底绘制也失败了: {param}。原因: {str(e2)}")
+                    plt.close(fig)
 
     def run_lunkuo(self):
         warnings.filterwarnings("ignore")
