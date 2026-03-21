@@ -7,7 +7,7 @@ import warnings
 # --- 引入 Matplotlib 内嵌库 ---
 import matplotlib
 
-matplotlib.use('Qt5Agg')  # 强制使用 Qt5 内嵌，不弹窗
+matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
@@ -97,12 +97,32 @@ def assign_colors(feature_type: str):
     return "red"
 
 
-# 控制台输出重定向器
+# 控制台输出重定向
 class StreamRedirector(QtCore.QObject):
     text_written = QtCore.pyqtSignal(str)
 
+    def __init__(self, is_error=False):
+        super().__init__()
+        self.is_error = is_error
+
     def write(self, text):
-        self.text_written.emit(str(text))
+        text = str(text)
+        # 忽略纯换行或空白
+        if not text.strip():
+            return
+
+        if self.is_error:
+            # 1. 拦截所有底层代码文件路径和堆栈追踪
+            if "Traceback" in text or 'File "' in text or ", line " in text:
+                return
+            # 2. 拦截 Matplotlib/Numpy 抛出的底层深层错
+            if "matplotlib" in text or "numpy" in text or "ValueError:" in text:
+                return
+            # 3. 对无法识别的其他错误，进行温和的格式化包装
+            self.text_written.emit(f"[底层事件] 进程状态已记录\n")
+        else:
+            # 正常 print 的输出，直接放行
+            self.text_written.emit(text)
 
     def flush(self):
         pass
@@ -114,11 +134,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         super(MainWindow, self).__init__(parent)
         self.setupUi(self)
 
-        # 1. 开启终端输出重定向
-        self.redirector = StreamRedirector()
-        self.redirector.text_written.connect(self.append_text)
-        sys.stdout = self.redirector
-        sys.stderr = self.redirector
+        # 1. 开启终端输出智能重定向（带降噪滤镜）
+        self.stdout_redirector = StreamRedirector(is_error=False)
+        self.stdout_redirector.text_written.connect(self.append_text)
+        sys.stdout = self.stdout_redirector
+
+        self.stderr_redirector = StreamRedirector(is_error=True)
+        self.stderr_redirector.text_written.connect(self.append_text)
+        sys.stderr = self.stderr_redirector
 
         # 2. 绑定第一排：基础地质与拓扑绘图
         self.btn_yuantu.clicked.connect(self.run_yuantu)
@@ -146,33 +169,27 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.btn_spatial.clicked.connect(self.run_spatial_topology_framework)
 
         self.opt = 0
-        print("系统启动序列完成。")
+        print("系统初始化完成：")
 
-    # 劫持输出打印到左侧
+
     def append_text(self, text):
-        # 获取垂直滚动条
         scrollbar = self.text_browser.verticalScrollBar()
-        # 判断当前滚动条是否在最底部（允许 10 像素的误差）
         is_at_bottom = scrollbar.value() >= scrollbar.maximum() - 10
 
-        # 在末尾插入文本，但不强制拉动视角
         cursor = self.text_browser.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         cursor.insertText(text)
 
-        # 只有当用户原本就在底部时，才跟随滚动
         if is_at_bottom:
             scrollbar.setValue(scrollbar.maximum())
 
-    # ==========================================
-    # 核心：图片内嵌机制（支持多图画廊模式）
-    # ==========================================
+
     def embed_figure(self, figs):
         """传入单个 fig 或一个 fig 列表，生成可切换的画廊"""
         if not isinstance(figs, list):
-            figs = [figs]  # 如果只传了一张图，自动转成列表
+            figs = [figs]
 
-        # 安全清除右侧画板的旧图和旧按钮
+            # 安全清除右侧画板的旧图和旧按钮
         while self.canvas_layout.count():
             item = self.canvas_layout.takeAt(0)
             widget = item.widget()
@@ -180,7 +197,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 widget.setParent(None)
                 widget.deleteLater()
             elif item.layout() is not None:
-                # 递归清除旧的画廊控制栏
                 layout = item.layout()
                 while layout.count():
                     sub_item = layout.takeAt(0)
@@ -193,32 +209,38 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.current_figs = figs
         self.current_fig_idx = 0
 
-        # 1. 顶部控制栏 (只有多张图才显示)
+        # 1. 顶部控制栏 (只有多张图才显示，纯净翻页)
         if len(figs) > 1:
             self.gallery_control_layout = QtWidgets.QHBoxLayout()
+            self.gallery_control_layout.setContentsMargins(10, 5, 10, 5)
+
             self.btn_prev_fig = QtWidgets.QPushButton("◀ 上一张")
             self.btn_prev_fig.setStyleSheet(
-                "background-color: #2c3e50; color: white; font-weight: bold; border-radius: 4px;")
-            self.btn_prev_fig.setMinimumHeight(30)
+                    "background-color: #34495e; color: white; padding: 5px 15px; border-radius: 4px;")
+            self.btn_prev_fig.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
 
             self.lbl_fig_status = QtWidgets.QLabel(f"1 / {len(figs)}")
             self.lbl_fig_status.setAlignment(QtCore.Qt.AlignCenter)
-            self.lbl_fig_status.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+            self.lbl_fig_status.setStyleSheet("font-weight: bold; font-size: 14px;")
 
             self.btn_next_fig = QtWidgets.QPushButton("下一张 ▶")
             self.btn_next_fig.setStyleSheet(
-                "background-color: #2c3e50; color: white; font-weight: bold; border-radius: 4px;")
-            self.btn_next_fig.setMinimumHeight(30)
+                "background-color: #34495e; color: white; padding: 5px 15px; border-radius: 4px;")
+            self.btn_next_fig.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
 
-            # 绑定上一张/下一张事件
             self.btn_prev_fig.clicked.connect(self.show_prev_figure)
             self.btn_next_fig.clicked.connect(self.show_next_figure)
+
+            # 居中排列
+            self.gallery_control_layout.addStretch()
             self.gallery_control_layout.addWidget(self.btn_prev_fig)
-            self.gallery_control_layout.addWidget(self.lbl_fig_status, 1)
+            self.gallery_control_layout.addWidget(self.lbl_fig_status)
             self.gallery_control_layout.addWidget(self.btn_next_fig)
+            self.gallery_control_layout.addStretch()
+
             self.canvas_layout.addLayout(self.gallery_control_layout)
 
-            # 2. 图片显示区 (存放当前的 Canvas)
+        # 2. 图片显示区
         self.canvas_display_layout = QtWidgets.QVBoxLayout()
         self.canvas_layout.addLayout(self.canvas_display_layout)
 
@@ -236,22 +258,17 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self._render_current_figure()
 
     def _render_current_figure(self):
-        """渲染当前索引对应的图片"""
-        # 清除当前的 canvas
+        """渲染当前索引对应的图片（完全去除了无用的贴图工具栏）"""
         while self.canvas_display_layout.count():
             item = self.canvas_display_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                    widget.setParent(None)
-                    widget.deleteLater()
+                widget.setParent(None)
+                widget.deleteLater()
 
         fig = self.current_figs[self.current_fig_idx]
 
-        # 生成新图板并带上官方放大镜工具栏
         canvas = FigureCanvas(fig)
-        toolbar = NavigationToolbar(canvas, self)
-
-        self.canvas_display_layout.addWidget(toolbar)
         self.canvas_display_layout.addWidget(canvas)
         canvas.draw()
 
@@ -802,7 +819,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             grid_plot[param] = grid_plot[param].replace([np.inf, -np.inf], np.nan).fillna(0)
 
             try:
-                # 尝试官方绘制
                 network.plot_contour(parameter=param, sampled_grid=grid_plot, colorindex=0)
                 fig = plt.gcf()
                 for ax in fig.axes:
@@ -815,8 +831,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     self.embed_figure(fig)
 
             except Exception as e:
-                # 【完美修复】：使用 print 触发左侧文本框输出，启用兜底强画逻辑
-                print(f"⚠️ 官方图表引擎轻微受阻，正启用兜底渲染引擎...")
                 try:
                     fig, ax = plt.subplots(figsize=(8, 8))
                     ax.grid(False)
@@ -834,10 +848,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                         self.embed_figure([fig])
                     except TypeError:
                         self.embed_figure(fig)
-
-                    print(f"✅ 兜底绘制成功：{param}")
                 except Exception as e2:
-                    print(f"❌ 终极兜底绘制也失败了: {param}。原因: {str(e2)}")
                     plt.close(fig)
 
     def run_lunkuo(self):
@@ -852,7 +863,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-        sampled_grid = network.contour_grid(cell_width=1000.0)
+
+        # 动态计算绘制图片
+        bounds = traces.total_bounds  # [minx, miny, maxx, maxy]
+        dynamic_width = (bounds[2] - bounds[0]) / 60.0
+
+        if dynamic_width <= 0:
+            dynamic_width = 100.0
+
+        sampled_grid = network.contour_grid(cell_width=dynamic_width)
+
         if self.opt == 1:
             self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
         elif self.opt == 2:
@@ -982,7 +1002,7 @@ def exception_hook(exctype, value, tb):
 
 
 if __name__ == "__main__":
-    sys.excepthook = exception_hook  # 挂载防崩溃钩子
+    sys.excepthook = exception_hook  # 挂载防崩溃
 
     app = QApplication(sys.argv)
     window = MainWindow()

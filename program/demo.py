@@ -6,6 +6,7 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(1400, 900)
+        MainWindow.setWindowTitle("地质断裂拓扑智能分析系统 v1.0")
         self.centralwidget = QtWidgets.QWidget(MainWindow)
 
         # 主布局 (垂直)
@@ -13,7 +14,7 @@ class Ui_MainWindow(object):
         self.main_vbox.setContentsMargins(10, 10, 10, 10)
 
         # ==========================================
-        # 上部：控制按键区 (分为三排逻辑清晰的工具栏)
+        # 上部：控制按键区 (你原来的三排排版)
         # ==========================================
         self.top_frame = QtWidgets.QFrame(self.centralwidget)
         self.top_frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
@@ -90,9 +91,8 @@ class Ui_MainWindow(object):
         self.canvas_layout = QtWidgets.QVBoxLayout(self.canvas_container)
         self.canvas_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 设置左右比例 (左侧输出占一小半，右侧图片占一大半)
         self.splitter.setSizes([350, 1050])
-        self.main_vbox.addWidget(self.splitter, 1)  # 1代表占据剩余全部高度
+        self.main_vbox.addWidget(self.splitter, 1)
 
         MainWindow.setCentralWidget(self.centralwidget)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
