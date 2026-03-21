@@ -83,7 +83,15 @@ class Ui_MainWindow(object):
         self.text_browser = QtWidgets.QTextBrowser(self.splitter)
         self.text_browser.setMinimumWidth(350)
         self.text_browser.setStyleSheet(
-            "background-color: #1e1e1e; color: #00ff00; font-family: Consolas; font-size: 13px; padding: 5px;")
+            "background-color: #f8f9fa; "
+            "color: #2c3e50; "
+            "border: 1px solid #dcdde1; "
+            "border-radius: 4px; "
+            "font-family: Consolas, 'Courier New', monospace; "
+            "font-size: 13px; "
+            "padding: 8px; "
+            "line-height: 1.5;"
+        )
 
         # --- 右下侧：图片内嵌大画板 ---
         self.canvas_container = QtWidgets.QWidget(self.splitter)

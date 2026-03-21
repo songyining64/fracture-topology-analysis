@@ -11,6 +11,8 @@ matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']  # 使用微软雅黑或黑体
+plt.rcParams['axes.unicode_minus'] = False
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QComboBox, QFrame, QHBoxLayout, QVBoxLayout, QLabel, \
@@ -736,6 +738,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_sanyuantu(self):
         warnings.filterwarnings("ignore")
+
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
+        plt.rcParams['axes.unicode_minus'] = False
+
         network = Network(
             traces,
             area,
@@ -745,10 +751,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+
+
         fig1, ax1, tax1 = network.plot_xyi()
+        ax1.axis('off')
         fig1.set_size_inches(9, 9)
         fig1.tight_layout()
+
         fig2, ax2, tax2 = network.plot_branch()
+        ax2.axis('off')
         fig2.set_size_inches(9, 9)
         fig2.tight_layout()
 
@@ -791,7 +802,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.embed_figure(fig)
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):
-        """绘制轮廓图；自带终极数据清洗与兜底引擎，防崩溃"""
         import pandas as pd
         import numpy as np
 
@@ -802,10 +812,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             if param not in sampled_grid.columns:
                 continue
 
-            # 1. 拷贝数据，不污染原始数据
             grid_plot = sampled_grid.copy()
 
-            # 2. 物理驱魔，过滤掉所有无效或空的几何网格！
             grid_plot = grid_plot[grid_plot.geometry.notna()]
             grid_plot = grid_plot[~grid_plot.geometry.is_empty]
             grid_plot = grid_plot[grid_plot.geometry.is_valid]
@@ -814,7 +822,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 print(f"⚠️ 参数 {param} 的有效网格为空，跳过绘制。")
                 continue
 
-            # 3. 清理数值列
             grid_plot[param] = pd.to_numeric(grid_plot[param], errors='coerce')
             grid_plot[param] = grid_plot[param].replace([np.inf, -np.inf], np.nan).fillna(0)
 
@@ -824,7 +831,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 for ax in fig.axes:
                     ax.grid(False)
 
-                # 兼容单图和画廊(列表)模式
                 try:
                     self.embed_figure([fig])
                 except TypeError:
