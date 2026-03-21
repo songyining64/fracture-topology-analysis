@@ -4,7 +4,6 @@ import os
 import math
 import warnings
 
-# --- 引入 Matplotlib 内嵌库 ---
 import matplotlib
 
 matplotlib.use('Qt5Agg')
@@ -801,7 +800,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 continue
 
             grid_plot = sampled_grid.copy()
-
             grid_plot = grid_plot[grid_plot.geometry.notna()]
             grid_plot = grid_plot[~grid_plot.geometry.is_empty]
             grid_plot = grid_plot[grid_plot.geometry.is_valid]
@@ -814,40 +812,76 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             grid_plot[param] = grid_plot[param].replace([np.inf, -np.inf], np.nan).fillna(0)
 
             try:
-                network.plot_contour(parameter=param, sampled_grid=grid_plot, colorindex=0)
-                fig = plt.gcf()
-                for ax in fig.axes:
-                    ax.grid(False)
+                fig, ax = plt.subplots(figsize=(9, 8))
+                ax.grid(False)
+
+                centroids = grid_plot.geometry.centroid
+                x = centroids.x.values
+                y = centroids.y.values
+                z = grid_plot[param].values
+
+                try:
+                    network.trace_gdf.plot(ax=ax, color='black', linewidth=0.5, alpha=0.3)
+                except:
+                    pass
+
+                contour = ax.tricontourf(x, y, z, levels=50, cmap='plasma', alpha=0.85)
+
+                cbar = fig.colorbar(contour, ax=ax)
+                cbar.set_label(param, fontname='Microsoft YaHei')
+
+                ax.set_aspect("equal")
+                ax.set_title(f"平滑热力图: {param}", fontname='Microsoft YaHei', fontsize=14, pad=15)
+                plt.tight_layout()
 
                 try:
                     self.embed_figure([fig])
                 except TypeError:
                     self.embed_figure(fig)
 
+
             except Exception as e:
+                print(f"平滑渲染失败: {param}。原因: {str(e)}")
                 try:
-                    fig, ax = plt.subplots(figsize=(8, 8))
-                    ax.grid(False)
-
-                    crs_orig = grid_plot.crs
-                    grid_plot.crs = None  # 临时剥离 CRS 防报错
-                    grid_plot.plot(column=param, ax=ax, legend=True, legend_kwds={"label": param})
-                    grid_plot.crs = crs_orig  # 恢复 CRS
-
-                    ax.set_aspect("equal")
-                    ax.set_title(f"Contour: {param}")
-                    plt.tight_layout()
-
-                    try:
-                        self.embed_figure([fig])
-                    except TypeError:
-                        self.embed_figure(fig)
-                except Exception as e2:
                     plt.close(fig)
+                except:
+                    pass
 
     def run_lunkuo(self):
         warnings.filterwarnings("ignore")
-        print(self.opt)
+        print(f"当前选择的绘图选项: {self.opt}")
+
+        global traces
+        global area
+
+
+        try:
+            bounds = traces.total_bounds
+
+            if area is not None:
+                minx, miny, maxx, maxy = area.total_bounds
+                spatial_index = traces.sindex
+                possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
+                original_len = len(traces)
+                traces = traces.iloc[possible_matches_index]
+
+            map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+            dp_tolerance = map_span * 0.002
+
+            if dp_tolerance > 0:
+                traces.geometry = traces.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
+
+        except Exception as e:
+            print(f"算法预处理跳过，回退到原始数据。原因: {e}")
+
+        bounds = traces.total_bounds
+        dynamic_width = (bounds[2] - bounds[0]) / 50.0
+
+        if dynamic_width <= 0:
+            dynamic_width = 100.0
+
+        QtWidgets.QApplication.processEvents()
+
         network = Network(
             traces,
             area,
@@ -857,13 +891,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-
-        # 动态计算绘制图片
-        bounds = traces.total_bounds  # [minx, miny, maxx, maxy]
-        dynamic_width = (bounds[2] - bounds[0]) / 60.0
-
-        if dynamic_width <= 0:
-            dynamic_width = 100.0
 
         sampled_grid = network.contour_grid(cell_width=dynamic_width)
 
