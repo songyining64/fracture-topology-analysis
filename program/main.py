@@ -4,6 +4,31 @@ import os
 import math
 import warnings
 
+# 保证 program 目录在 path 中，便于从项目根或 program/ 运行时的导入
+_PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
+# 清除 fractopo 损坏的 joblib 缓存（EOFError），避免每次运行报错
+for _cache in [
+    os.path.join(_PROGRAM_DIR, ".cache", "fractopo"),
+    os.path.join(os.path.dirname(_PROGRAM_DIR), ".cache", "fractopo"),
+]:
+    if os.path.isdir(_cache):
+        try:
+            import shutil
+            shutil.rmtree(_cache)
+        except Exception:
+            pass
+
+# Mac 上 PyQt5 找不到 cocoa 插件时（必须在 import PyQt5 之前设置）
+if sys.platform == "darwin":
+    for p in sys.path:
+        qt_plugin_path = os.path.join(p, "PyQt5", "Qt5", "plugins", "platforms")
+        if os.path.exists(qt_plugin_path):
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugin_path
+            break
+
 import matplotlib
 
 matplotlib.use('Qt5Agg')
@@ -56,6 +81,7 @@ except ImportError:
 
 warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
+# 数据源：取消注释要使用的区块，保证 name 与 traces/area 一致
 trace_data_url = "KB11/KB11_traces.geojson"
 area_data_url = "KB11/KB11_area.geojson"
 traces = gpd.read_file(trace_data_url)
@@ -66,15 +92,16 @@ name = "KB11"
 # area_data_url = "THK/my_area.geojson"
 # traces = gpd.read_file(trace_data_url)
 # area = gpd.read_file(area_data_url)
-traces.drop_duplicates(subset="geometry", inplace=True)
-traces.reset_index(drop=True, inplace=True)
-name = "Yingmai 2 area in Tarim Basin"
+# name = "Yingmai 2 area in Tarim Basin"
 
 # trace_data_url = "MY/11.geojson"
 # area_data_url = "MY/my_area1.geojson"
 # traces = gpd.read_file(trace_data_url)
 # area = gpd.read_file(area_data_url)
 # name = "MY"
+
+traces.drop_duplicates(subset="geometry", inplace=True)
+traces.reset_index(drop=True, inplace=True)
 
 geometry = traces.geometry.tolist()
 left, right, down, up = math.inf, -math.inf, math.inf, -math.inf
@@ -84,7 +111,6 @@ for one in geometry:
     down = min(down, one.boundary.bounds[1])
     up = max(up, one.boundary.bounds[3])
 rate = (up - down) / (right - left)
-print(rate)
 width, height = 0.01 * (right - left), 0.01 * (up - down)
 
 
@@ -98,7 +124,7 @@ def assign_colors(feature_type: str):
     return "red"
 
 
-# 控制台输出重定向
+# 控制台输出重定向（错误信息放行，便于排查；仅过滤已知无害的系统噪音）
 class StreamRedirector(QtCore.QObject):
     text_written = QtCore.pyqtSignal(str)
 
@@ -108,21 +134,27 @@ class StreamRedirector(QtCore.QObject):
 
     def write(self, text):
         text = str(text)
-        # 忽略纯换行或空白
         if not text.strip():
             return
 
         if self.is_error:
-            # 1. 拦截所有底层代码文件路径和堆栈追踪
-            if "Traceback" in text or 'File "' in text or ", line " in text:
+            # 只过滤已知无害的系统噪音，保留真实错误供排查
+            skip_patterns = (
+                "building the font cache",
+                "PasteBoard:",
+                "Connection Invalid",
+                "Failure on line",
+                "no screens available",
+                "id scheduleApplicationNotification",
+                "MemorizedFunc",
+                "Exception while loading results",
+                "joblib/memory.py",
+                ".cache/fractopo",
+            )
+            if any(p in text for p in skip_patterns):
                 return
-            # 2. 拦截 Matplotlib/Numpy 抛出的底层深层错
-            if "matplotlib" in text or "numpy" in text or "ValueError:" in text:
-                return
-            # 3. 对无法识别的其他错误，进行温和的格式化包装
-            self.text_written.emit(f"[底层事件] 进程状态已记录\n")
+            self.text_written.emit(text)
         else:
-            # 正常 print 的输出，直接放行
             self.text_written.emit(text)
 
     def flush(self):
@@ -433,13 +465,28 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
+        # 先读取 CSV 列名，便于校验和提示
+        try:
+            import pandas as _pd
+            _df_preview = _pd.read_csv(csv_path, nrows=1)
+            _available_cols = list(_df_preview.columns)
+        except Exception:
+            _available_cols = []
         target_column, ok = QInputDialog.getText(
             self,
             "目标列名",
-            "请输入要预测的目标列（例如 Porosity）：",
-            text="Porosity",
+            "请输入要预测的目标列（例如 Area）：",
+            text="Area",
         )
-        if not ok or not target_column:
+        if not ok or not target_column or not target_column.strip():
+            return
+        target_column = target_column.strip()
+        if _available_cols and target_column not in _available_cols:
+            QMessageBox.warning(
+                self,
+                "目标列不存在",
+                f"CSV 中未找到列「{target_column}」。\n可用列：{', '.join(_available_cols[:15])}{'...' if len(_available_cols) > 15 else ''}",
+            )
             return
         import warnings as _warnings
 

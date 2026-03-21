@@ -16,11 +16,19 @@
 
 注意：
 - 该文件仅做离线实验与绘图，不在主界面中调用，避免影响日常使用。
+- 建议在 program 目录下运行：cd program && python experiments_analysis.py
 """
+
+import os
+import sys
+
+# 保证 program 目录在 path 中，便于导入 feature_engineering、fusion_algorithm 等
+_PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
 
 from typing import Dict, Any, List, Optional, Tuple
 
-import os
 import numpy as np
 import pandas as pd
 
