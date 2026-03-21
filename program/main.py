@@ -187,11 +187,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
 
     def embed_figure(self, figs):
-        """传入单个 fig 或一个 fig 列表，生成可切换的画廊"""
         if not isinstance(figs, list):
             figs = [figs]
 
-            # 安全清除右侧画板的旧图和旧按钮
         while self.canvas_layout.count():
             item = self.canvas_layout.takeAt(0)
             widget = item.widget()
@@ -211,7 +209,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.current_figs = figs
         self.current_fig_idx = 0
 
-        # 1. 顶部控制栏 (只有多张图才显示，纯净翻页)
         if len(figs) > 1:
             self.gallery_control_layout = QtWidgets.QHBoxLayout()
             self.gallery_control_layout.setContentsMargins(10, 5, 10, 5)
@@ -233,7 +230,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.btn_prev_fig.clicked.connect(self.show_prev_figure)
             self.btn_next_fig.clicked.connect(self.show_next_figure)
 
-            # 居中排列
             self.gallery_control_layout.addStretch()
             self.gallery_control_layout.addWidget(self.btn_prev_fig)
             self.gallery_control_layout.addWidget(self.lbl_fig_status)
@@ -242,11 +238,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
             self.canvas_layout.addLayout(self.gallery_control_layout)
 
-        # 2. 图片显示区
         self.canvas_display_layout = QtWidgets.QVBoxLayout()
         self.canvas_layout.addLayout(self.canvas_display_layout)
 
-        # 显示第一张图
         self._render_current_figure()
 
     def show_prev_figure(self):
@@ -260,7 +254,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self._render_current_figure()
 
     def _render_current_figure(self):
-        """渲染当前索引对应的图片（完全去除了无用的贴图工具栏）"""
         while self.canvas_display_layout.count():
             item = self.canvas_display_layout.takeAt(0)
             widget = item.widget()
@@ -274,7 +267,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.canvas_display_layout.addWidget(canvas)
         canvas.draw()
 
-        # 更新文字和按钮状态
         if len(self.current_figs) > 1:
             self.lbl_fig_status.setText(f"第 {self.current_fig_idx + 1} 张 / 共 {len(self.current_figs)} 张")
             self.btn_prev_fig.setEnabled(self.current_fig_idx > 0)
@@ -342,7 +334,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 plt.imshow(img)
                 plt.axis("off")
                 plt.tight_layout()
-                # 【替换修改点】：将原来的 plt.show() 改为以下这行：
                 self.embed_figure(plt.gcf())
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
@@ -443,7 +434,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
-        # 让用户输入要预测的目标列名，避免在界面里写死字段
         target_column, ok = QInputDialog.getText(
             self,
             "目标列名",
@@ -536,7 +526,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
         ax.set_aspect('equal')
-        # 【替换修改点】：将原来的 plt.show() 改为以下这行：
         self.embed_figure(fig)
 
     def run_fenleihou(self):
@@ -642,7 +631,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.ylim((down - height, up + height))
         ax.legend(title=' Type')
         ax.set_aspect('equal')
-        # 【替换修改点】：将原来的 plt.show() 改为以下这行：
         self.embed_figure(fig)
 
     def run_tuopushuxing(self):
@@ -970,7 +958,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.colorbar(scatter, ax=ax1, label="cluster_id")
         ax1.set_aspect("equal", adjustable="datalim")
         plt.tight_layout()
-        # 【替换修改点】：将原来的 plt.show() 改为以下这行：
         self.embed_figure(fig1)
         summary_lines = [
             "【智能拓扑分析结果】",
