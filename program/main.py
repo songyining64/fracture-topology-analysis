@@ -851,68 +851,92 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         warnings.filterwarnings("ignore")
         print(f"当前选择的绘图选项: {self.opt}")
 
-        global traces
-        global area
 
+        progress = QtWidgets.QProgressDialog("正在进行空间计算与高清渲染，请耐心等待...", None, 0, 0, self)
+        progress.setWindowTitle("系统运算中")
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
 
-        try:
-            bounds = traces.total_bounds
-
-            if area is not None:
-                minx, miny, maxx, maxy = area.total_bounds
-                spatial_index = traces.sindex
-                possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
-                original_len = len(traces)
-                traces = traces.iloc[possible_matches_index]
-
-            map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
-            dp_tolerance = map_span * 0.002
-
-            if dp_tolerance > 0:
-                traces.geometry = traces.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
-
-        except Exception as e:
-            print(f"算法预处理跳过，回退到原始数据。原因: {e}")
-
-        bounds = traces.total_bounds
-        dynamic_width = (bounds[2] - bounds[0]) / 50.0
-
-        if dynamic_width <= 0:
-            dynamic_width = 100.0
-
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         QtWidgets.QApplication.processEvents()
 
-        network = Network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
+        try:
+            global traces
+            global area
 
-        sampled_grid = network.contour_grid(cell_width=dynamic_width)
+            try:
+                bounds = traces.total_bounds
 
-        if self.opt == 1:
-            self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
-        elif self.opt == 2:
-            self._plot_contour_safe(network, sampled_grid,
-                                    ["Trace Min Length", "Trace Max Length", "Trace Mean Length"])
-        elif self.opt == 3:
-            self._plot_contour_safe(network, sampled_grid,
-                                    ["Dimensionless Intensity B22", "Dimensionless Intensity P22"])
-        elif self.opt == 4:
-            self._plot_contour_safe(network, sampled_grid, "Number of Traces (Real)")
-        elif self.opt == 5:
-            self._plot_contour_safe(network, sampled_grid,
-                                    ["Branch Min Length", "Branch Max Length", "Branch Mean Length"])
-        elif self.opt == 6:
-            self._plot_contour_safe(network, sampled_grid, ["Areal Frequency B20", "Areal Frequency P20"])
-        elif self.opt == 7:
-            self._plot_contour_safe(network, sampled_grid, ["Connections per Trace", "Connections per Branch"])
-        elif self.opt == 8:
-            self._plot_contour_safe(network, sampled_grid, "Connection Frequency")
+                if area is not None:
+                    minx, miny, maxx, maxy = area.total_bounds
+                    spatial_index = traces.sindex
+                    possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
+                    original_len = len(traces)
+                    traces = traces.iloc[possible_matches_index]
+
+                map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+                dp_tolerance = map_span * 0.002
+
+                if dp_tolerance > 0:
+                    traces.geometry = traces.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
+
+            except Exception as e:
+                print(f"算法预处理跳过。原因: {e}")
+
+            bounds = traces.total_bounds
+            dynamic_width = (bounds[2] - bounds[0]) / 20.0
+
+            if dynamic_width <= 0:
+                dynamic_width = 100.0
+
+            print(f"正在执行空间拓扑计算 (网格大小: {dynamic_width:.4f})...")
+            QtWidgets.QApplication.processEvents()
+
+            network = Network(
+                traces,
+                area,
+                name=name,
+                determine_branches_nodes=True,
+                truncate_traces=True,
+                circular_target_area=False,
+                snap_threshold=0.001,
+            )
+
+            sampled_grid = network.contour_grid(cell_width=dynamic_width)
+            print("拓扑网格计算完成，准备渲染！")
+
+            progress.setLabelText("计算完成，正在生成高清平滑图像...")
+            QtWidgets.QApplication.processEvents()
+
+            # --- 路由分发绘图请求 ---
+            if self.opt == 1:
+                self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
+            elif self.opt == 2:
+                self._plot_contour_safe(network, sampled_grid,
+                                        ["Trace Min Length", "Trace Max Length", "Trace Mean Length"])
+            elif self.opt == 3:
+                self._plot_contour_safe(network, sampled_grid,
+                                        ["Dimensionless Intensity B22", "Dimensionless Intensity P22"])
+            elif self.opt == 4:
+                self._plot_contour_safe(network, sampled_grid, "Number of Traces (Real)")
+            elif self.opt == 5:
+                self._plot_contour_safe(network, sampled_grid,
+                                        ["Branch Min Length", "Branch Max Length", "Branch Mean Length"])
+            elif self.opt == 6:
+                self._plot_contour_safe(network, sampled_grid, ["Areal Frequency B20", "Areal Frequency P20"])
+            elif self.opt == 7:
+                self._plot_contour_safe(network, sampled_grid, ["Connections per Trace", "Connections per Branch"])
+            elif self.opt == 8:
+                self._plot_contour_safe(network, sampled_grid, "Connection Frequency")
+
+        except Exception as e:
+            print(f"❌ 运行报错: {str(e)}")
+
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            progress.close()
 
     def run_ronghe(self):
         if run_fusion_pipeline is None:
