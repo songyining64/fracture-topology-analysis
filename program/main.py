@@ -238,6 +238,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 layout.deleteLater()
 
         self.current_figs = figs
+        self.current_fig_sizes = [tuple(fig.get_size_inches()) for fig in figs]
+        self.current_fig_dpis = [fig.dpi for fig in figs]
         self.current_fig_idx = 0
 
         if len(figs) > 1:
@@ -270,6 +272,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.canvas_layout.addLayout(self.gallery_control_layout)
 
         self.canvas_display_layout = QtWidgets.QVBoxLayout()
+        self.canvas_display_layout.setContentsMargins(8, 8, 8, 8)
         self.canvas_layout.addLayout(self.canvas_display_layout)
 
         self._render_current_figure()
@@ -293,8 +296,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 widget.deleteLater()
 
         fig = self.current_figs[self.current_fig_idx]
+        if hasattr(self, "current_fig_sizes") and self.current_fig_idx < len(self.current_fig_sizes):
+            width, height = self.current_fig_sizes[self.current_fig_idx]
+            fig.set_size_inches(width, height, forward=False)
+        if hasattr(self, "current_fig_dpis") and self.current_fig_idx < len(self.current_fig_dpis):
+            fig.set_dpi(self.current_fig_dpis[self.current_fig_idx])
 
         canvas = FigureCanvas(fig)
+        canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.canvas_display_layout.addWidget(canvas)
         canvas.draw()
 
@@ -790,12 +799,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fig1, ax1, tax1 = network.plot_xyi()
         ax1.axis('off')
         fig1.set_size_inches(9, 9)
-        fig1.tight_layout()
+        # fractopo 的三元图顶点标签和边角文字容易贴近画布边缘，统一向内收缩显示区域
+        ax1.set_position([0.18, 0.16, 0.64, 0.64])
+        fig1.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.90)
 
         fig2, ax2, tax2 = network.plot_branch()
         ax2.axis('off')
         fig2.set_size_inches(9, 9)
-        fig2.tight_layout()
+        ax2.set_position([0.18, 0.16, 0.64, 0.64])
+        fig2.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.90)
 
         self.embed_figure([fig1, fig2])
 
