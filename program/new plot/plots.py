@@ -1,8 +1,16 @@
 # Packages
 import math
+import sys
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+
+# 配置中文字体，避免图表乱码
+if sys.platform == "darwin":
+    plt.rcParams["font.sans-serif"] = ["PingFang SC", "Heiti SC", "STHeiti", "Arial Unicode MS", "SimHei"]
+else:
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS"]
+plt.rcParams["axes.unicode_minus"] = False
 from joblib.numpy_pickle_utils import xrange
 from matplotlib import colors, cm
 from matplotlib.collections import PatchCollection

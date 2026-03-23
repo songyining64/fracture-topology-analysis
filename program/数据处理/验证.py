@@ -1,6 +1,15 @@
+import sys
+import os
+_PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
 import geopandas as gpd
 import shapely.geometry as sg
 import matplotlib.pyplot as plt
+
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
 
 trace_data_url = "thkceshi-landmark1.geojson"
 traces = gpd.read_file(trace_data_url)

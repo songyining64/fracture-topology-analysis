@@ -1,4 +1,10 @@
 # 导入
+import sys
+import os
+_PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
 import numpy as np
 from fractopo.general import CC_branch, CI_branch, II_branch, X_node, Y_node, I_node
 import fractopo
@@ -9,6 +15,9 @@ from scipy.stats import gaussian_kde
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import json
+
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
 from shapely.geometry import Polygon, MultiPolygon
 import geojson
 
@@ -68,7 +77,7 @@ kb11_network = Network(
 )
 
 # 按颜色绘制处理后的线条
-fix, ax = plt.subplots(figsize=(9, 9))
+fig, ax = plt.subplots(figsize=(9, 9))
 # Traces
 kb11_network.trace_gdf.plot(
     colors=[assign_colors(bt) for bt in kb11_network.branch_types], ax=ax, linewidth=0.5

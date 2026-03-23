@@ -8,6 +8,9 @@ from fractopo.analysis import length_distributions
 from fractopo import general
 from matplotlib import pyplot as plt
 
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
+
 # 清除 fractopo 的缓存
 shutil.rmtree('.cache/fractopo', ignore_errors=True)
 

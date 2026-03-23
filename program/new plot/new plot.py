@@ -1,3 +1,10 @@
+import sys
+import os
+# 确保能导入 program 下的 utils
+_PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+
 import geopandas as gpd
 from fractopo import Network
 from scipy.spatial import distance_matrix
@@ -6,6 +13,9 @@ from preprocessing import *
 from metrics import *
 from edits import *
 from plots import *
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
+
 from analyis import FracAnalysisPoly, FancyPlot
 from analyis_test import geojson2shp
 from matplotlib.colors import ListedColormap

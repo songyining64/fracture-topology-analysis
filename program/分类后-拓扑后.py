@@ -5,6 +5,9 @@ import geopandas as gpd
 import warnings
 import matplotlib.pyplot as plt
 
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
+
 
 def assign_colors(feature_type: str):
     if feature_type in (CC_branch, X_node):

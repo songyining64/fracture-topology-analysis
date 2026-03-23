@@ -5,6 +5,9 @@ from fractopo import Network
 from matplotlib import pyplot as plt
 import time
 
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
+
 time_start = time.time()  #程序开始时间
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)

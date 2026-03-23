@@ -12,6 +12,10 @@ _PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROGRAM_DIR not in sys.path:
     sys.path.insert(0, _PROGRAM_DIR)
 
+# 绘图前配置中文字体
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
+
 
 def shap_feature_importance(
     model,

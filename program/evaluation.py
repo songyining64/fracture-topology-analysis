@@ -101,6 +101,8 @@ def plot_confusion_matrix_heatmap(
 ) -> None:
     """混淆矩阵热力图，用于分类任务评估展示。"""
     import matplotlib.pyplot as plt
+    from utils.matplotlib_chinese import setup_matplotlib_chinese
+    setup_matplotlib_chinese()
     from sklearn.metrics import confusion_matrix
     cm = confusion_matrix(y_true, y_pred)
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -130,6 +132,8 @@ def plot_cv_metrics(
 ) -> None:
     """CV 各折指标折线图（如 MAE、R² 每折）。"""
     import matplotlib.pyplot as plt
+    from utils.matplotlib_chinese import setup_matplotlib_chinese
+    setup_matplotlib_chinese()
     folds = list(range(1, len(cv_metrics) + 1))
     fig, ax = plt.subplots(figsize=(6, 4))
     for name in metric_names:
@@ -155,6 +159,8 @@ def plot_fusion_comparison_boxplot(
 ) -> None:
     """加权融合与 GAT 融合得分分布箱线图，突出 GAT 优势。"""
     import matplotlib.pyplot as plt
+    from utils.matplotlib_chinese import setup_matplotlib_chinese
+    setup_matplotlib_chinese()
     labels = list(scores_dict.keys())
     data = [np.asarray(scores_dict[k]).ravel() for k in labels]
     fig, ax = plt.subplots(figsize=(5, 4))

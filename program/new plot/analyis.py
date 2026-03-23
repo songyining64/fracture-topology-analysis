@@ -1,4 +1,17 @@
 import shapefile
+import sys
+import os
+
+# 支持从 program 或 new plot 目录运行
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROGRAM_DIR = os.path.dirname(_SCRIPT_DIR)
+if _PROGRAM_DIR not in sys.path:
+    sys.path.insert(0, _PROGRAM_DIR)
+try:
+    from utils.matplotlib_chinese import setup_matplotlib_chinese
+    setup_matplotlib_chinese()
+except ImportError:
+    pass  # 独立运行时可跳过
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import Wedge
@@ -531,7 +544,6 @@ def FancyPlot(FracAnalyzed, Rose=True, Fractures=True, Patches=False, Circles=Fa
                                             height=cell_size * 1000, alpha=0.8))
 
         cbar = plt.colorbar(s)
-        plt.rcParams['font.sans-serif'] = ['SimHei']
         cbar.set_label("每{}平方公里的裂缝数".format(cell_size), fontsize=16, rotation=90)
         plt.clim(0, max_value)
 

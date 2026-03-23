@@ -35,8 +35,10 @@ matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']  # 使用微软雅黑或黑体
-plt.rcParams['axes.unicode_minus'] = False
+
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+
+setup_matplotlib_chinese()
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QComboBox, QFrame, QHBoxLayout, QVBoxLayout, QLabel, \
@@ -782,8 +784,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def run_sanyuantu(self):
         warnings.filterwarnings("ignore")
 
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False
+        setup_matplotlib_chinese()
 
         network = Network(
             traces,
@@ -887,10 +888,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 contour = ax.tricontourf(x, y, z, levels=50, cmap='plasma', alpha=0.85)
 
                 cbar = fig.colorbar(contour, ax=ax)
-                cbar.set_label(param, fontname='Microsoft YaHei')
+                cbar.set_label(param)
 
                 ax.set_aspect("equal")
-                ax.set_title(f"平滑热力图: {param}", fontname='Microsoft YaHei', fontsize=14, pad=15)
+                ax.set_title(f"平滑热力图: {param}", fontsize=14, pad=15)
                 plt.tight_layout()
 
                 try:

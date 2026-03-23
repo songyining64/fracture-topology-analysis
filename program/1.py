@@ -4,6 +4,8 @@ from fractopo import Network
 from fractopo.analysis.parameters import plot_parameters_plot
 from matplotlib import pyplot as plt
 
+from utils.matplotlib_chinese import setup_matplotlib_chinese
+setup_matplotlib_chinese()
 warnings.filterwarnings("ignore")
 
 traces = gpd.read_file("KB11/KB11_traces.geojson")
