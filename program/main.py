@@ -427,168 +427,178 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QMessageBox.critical(self, "运行出错", str(e))
 
     def run_guoji_train(self):
+        import matplotlib.pyplot as plt
+        plt.close('all')  # 强制清空历史残留画板
+
         try:
             from feature_engineering import build_feature_matrix
             from ml.train import train_xgboost_regression, save_model_report
         except ImportError as e:
-            QMessageBox.warning(self, "模块未安装", f"请确保 feature_engineering、ml.train 可用，并安装 xgboost。\n{e}")
+            QMessageBox.warning(self, "模块未安装", f"请确保环境可用。\n{e}")
             return
+
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
+
+        import warnings
         warnings.filterwarnings("ignore")
+
         try:
             r = build_feature_matrix(csv_path, out_processed_dir=None)
             X, y = r["X"], r["y"]
-            if y is None:
-                y = r["X"][:, 0]
-            if len(X) < 10:
-                QMessageBox.warning(
-                    self, "样本过少",
-                    f"特征工程后有效样本仅 {len(X)} 个，至少需要约 10 个才能做 5 折 CV。请检查 CSV 或先运行 export_grid_csv.py 生成完整网格数据。",
-                )
-                return
+            if y is None: y = r["X"][:, 0]
+
             res = train_xgboost_regression(X, y, n_splits=5, test_size=0.1)
             model_dir = os.path.join(os.path.dirname(csv_path), "model")
             save_model_report(res, model_dir, name="xgboost_reg", feature_names=r.get("feature_names"))
+
+            # 抓取训练生成的散点图并嵌入
+            fig = plt.gcf()
+            self.embed_figure([fig])
+            plt.close('all')
+
             txt = "【XGBoost 训练结果】\n\n"
             txt += f"CV R² 均值：{res['cv_agg']['R2_mean']:.4f}\n"
-            txt += f"CV MAE 均值：{res['cv_agg']['MAE_mean']:.4f}\n"
             txt += f"测试集 R²：{res['test_metrics']['R2']:.4f}\n"
-            txt += f"测试集 MAE：{res['test_metrics']['MAE']:.4f}\n"
             txt += f"\n模型已保存：{model_dir}/xgboost_reg.json"
+
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
-            self.text_browser.moveCursor(QTextCursor.End)
-            QMessageBox.information(self, "完成", "训练完成，模型已保存至 model/。")
+            self.text_browser.moveCursor(QtGui.QTextCursor.End)
+            QMessageBox.information(self, "完成", "训练完成，图表已刷新。")
+
         except Exception as e:
-            import traceback
-            err_detail = traceback.format_exc()
-            QMessageBox.critical(
-                self, "运行出错",
-                f"{str(e)}\n\n详细报错：\n{err_detail[-800:]}",
-            )
+            QMessageBox.critical(self, "运行出错", str(e))
 
     def run_guoji_shap(self):
+        import matplotlib.pyplot as plt
+        plt.close('all')
+
         try:
             from ml.explain import explain_xgboost
         except ImportError:
             QMessageBox.warning(self, "模块未安装", "请确保 ml.explain 可用，并安装 shap。")
             return
+
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
-        model_path = os.path.join(os.path.dirname(csv_path), "model", "xgboost_reg.json")
+
+        basic_model_dir = os.path.join(os.path.dirname(csv_path), "model")
+        out_dir = basic_model_dir
+        model_path = os.path.join(basic_model_dir, "xgboost_reg.json")
+
         if not os.path.isfile(model_path):
-            QMessageBox.warning(self, "请先训练", "未找到 model/xgboost_reg.json，请先点击「训练 XGBoost」。")
+            QMessageBox.warning(self, "请先训练", "未找到基础训练模型！\n请先点击「训练 XGBoost」。")
             return
+
+        import warnings
         warnings.filterwarnings("ignore")
+
         try:
-            out_dir = os.path.join(os.path.dirname(csv_path), "model")
             df_imp = explain_xgboost(model_path, csv_path, out_dir=out_dir)
-            txt = "【SHAP 特征贡献占比】\n\n"
+
+            txt = "【XGBoost SHAP 特征贡献分析】\n\n"
             txt += df_imp.head(10).to_string()
-            txt += "\n\n（summary 图已保存至 model/shap_summary.png）"
+            txt += f"\n\n（summary 图已保存至 {out_dir}/shap_summary.png）"
+
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
-            self.text_browser.moveCursor(QTextCursor.End)
+            self.text_browser.moveCursor(QtGui.QTextCursor.End)
+
             shap_png = os.path.join(out_dir, "shap_summary.png")
             if os.path.isfile(shap_png):
-                plt.figure(figsize=(7, 5))
+                fig = plt.figure(figsize=(8, 6))
                 img = plt.imread(shap_png)
                 plt.imshow(img)
                 plt.axis("off")
-                plt.tight_layout()
-                self.embed_figure(plt.gcf())
-            QMessageBox.information(self, "完成", "SHAP 可解释已运行，特征贡献与图已显示。")
+                fig.tight_layout()
+                self.embed_figure([fig])
+
+            plt.close('all')
+            QMessageBox.information(self, "完成", "SHAP 分析已成功运行，特征图已在右侧显示！")
+
         except Exception as e:
-            QMessageBox.critical(self, "运行出错", str(e))
+            QMessageBox.critical(self, "SHAP 运行遇到小麻烦",
+                                 f"底层分析失败。建议先点击【训练 XGBoost】重新对齐数据再试。\n报错详情：{str(e)}")
 
     def run_spatial_topology_framework(self):
-        """一键运行空间-拓扑融合学习框架：特征工程 + 融合 + XGBoost + SHAP。"""
+        """一键运行空间-拓扑融合学习框架"""
+        import matplotlib.pyplot as plt
+        plt.close('all')
+
         try:
             from spatial_topology_framework import run_spatial_topology_fusion_pipeline
         except ImportError as e:
-            QMessageBox.warning(
-                self,
-                "模块未安装",
-                f"请确保 spatial_topology_framework.py、feature_engineering、fusion_algorithm、ml 可用。\n{e}",
-            )
+            QMessageBox.warning(self, "模块未安装", f"请确保相关模块可用。\n{e}")
             return
+
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
-        # 先读取 CSV 列名，便于校验和提示
-        try:
-            import pandas as _pd
-            _df_preview = _pd.read_csv(csv_path, nrows=1)
-            _available_cols = list(_df_preview.columns)
-        except Exception:
-            _available_cols = []
+
         target_column, ok = QInputDialog.getText(
             self,
             "目标列名",
-            "请输入要预测的目标列（需有数值变化，如 Fracture Intensity B21、Connections per Branch）。\n注意：不要选 Area，网格面积恒定会导致模型崩溃：",
+            "请输入要预测的目标列（例如 Fracture Intensity B21）：",
             text="Fracture Intensity B21",
         )
-        if not ok or not target_column or not target_column.strip():
+        if not ok or not target_column.strip():
             return
         target_column = target_column.strip()
-        if _available_cols and target_column not in _available_cols:
-            QMessageBox.warning(
-                self,
-                "目标列不存在",
-                f"CSV 中未找到列「{target_column}」。\n可用列：{', '.join(_available_cols[:15])}{'...' if len(_available_cols) > 15 else ''}",
-            )
-            return
-        import warnings as _warnings
 
-        _warnings.filterwarnings("ignore")
+        import warnings
+        warnings.filterwarnings("ignore")
+
         try:
             res = run_spatial_topology_fusion_pipeline(
                 csv_path=csv_path,
                 target_column=target_column,
             )
+
             xgb_res = res.get("xgb_result", {})
             cv_agg = xgb_res.get("cv_agg", {})
             test_metrics = xgb_res.get("test_metrics", {})
             shap_df = res.get("shap_importance")
+
+            out_dir = os.path.join(os.path.dirname(csv_path), "data", "processed")
+            shap_png = os.path.join(out_dir, "shap_summary.png")
+
+            if os.path.isfile(shap_png):
+                fig = plt.figure(figsize=(8, 6))
+                img = plt.imread(shap_png)
+                plt.imshow(img)
+                plt.axis("off")
+                fig.tight_layout()
+                self.embed_figure([fig])
+
+            plt.close('all')
+
+
             txt = "【空间-拓扑融合分析】\n\n"
             txt += f"目标列：{target_column}\n"
             if cv_agg:
                 txt += "\n交叉验证（CV）指标：\n"
-                if "R2_mean" in cv_agg:
-                    txt += f"  R² 均值：{cv_agg['R2_mean']:.4f}\n"
-                if "MAE_mean" in cv_agg:
-                    txt += f"  MAE 均值：{cv_agg['MAE_mean']:.4f}\n"
-                if "RMSE_mean" in cv_agg:
-                    txt += f"  RMSE 均值：{cv_agg['RMSE_mean']:.4f}\n"
+                if "R2_mean" in cv_agg: txt += f"  R² 均值：{cv_agg['R2_mean']:.4f}\n"
+                if "RMSE_mean" in cv_agg: txt += f"  RMSE 均值：{cv_agg['RMSE_mean']:.4f}\n"
             if test_metrics:
                 txt += "\n测试集指标：\n"
-                if "R2" in test_metrics:
-                    txt += f"  R²：{test_metrics['R2']:.4f}\n"
-                if "MAE" in test_metrics:
-                    txt += f"  MAE：{test_metrics['MAE']:.4f}\n"
-                if "RMSE" in test_metrics:
-                    txt += f"  RMSE：{test_metrics['RMSE']:.4f}\n"
+                if "R2" in test_metrics: txt += f"  R²：{test_metrics['R2']:.4f}\n"
             if shap_df is not None and not shap_df.empty:
-                top_k = shap_df.head(8)
                 txt += "\nTop 特征贡献（SHAP）：\n"
-                txt += top_k.to_string(index=False)
-                txt += "\n\n（完整 SHAP 图已保存至 data/processed/shap_summary.png 或 config 中指定目录）"
+                txt += shap_df.head(8).to_string(index=False)
+                txt += "\n\n（SHAP 分析图已嵌入右侧画板）"
+
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
-            self.text_browser.moveCursor(QTextCursor.End)
-            QMessageBox.information(self, "完成", "空间-拓扑融合分析已运行，结果已显示在左侧文本框。")
-        except Exception as e:
-            import traceback as _tb
+            self.text_browser.moveCursor(QtGui.QTextCursor.End)
+            QMessageBox.information(self, "完成", "空间-拓扑融合运行完毕")
 
-            err_detail = _tb.format_exc()
-            QMessageBox.critical(
-                self,
-                "运行出错",
-                f"{str(e)}\n\n详细报错：\n{err_detail[-800:]}",
-            )
+        except Exception as e:
+            import traceback
+            err_detail = traceback.format_exc()
+            QMessageBox.critical(self, "运行出错", f"{str(e)}\n\n详细报错：\n{err_detail[-500:]}")
 
     def _set_ronghe_combo_tooltip(self):
         lines = ["融合方式："]

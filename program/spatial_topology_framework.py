@@ -197,6 +197,8 @@ def run_spatial_topology_fusion_pipeline(
         random_state=int(train_cfg.get("random_state", 42)),
     )
     model = xgb_result["model"]
+    import matplotlib.pyplot as plt
+    xgb_fig = plt.gcf()
     # 使用全量 X 计算当前样本的预测值，便于与融合得分对比
     try:
         import numpy as _np
@@ -227,6 +229,7 @@ def run_spatial_topology_fusion_pipeline(
     return {
         "df": df,
         "xgb_result": xgb_result,
+        "xgb_fig": xgb_fig,
         "shap_importance": shap_df,
         "gat_metrics": gat_metrics,
         "gnn_metrics": gnn_metrics,

@@ -28,12 +28,39 @@ area_data_url = os.path.join(base, cfg["area"])
 name = cfg["name"]
 out_csv_name = cfg.get("csv", name + ".csv")
 
+
 if not os.path.isfile(trace_data_url) or not os.path.isfile(area_data_url):
     print(f"未找到数据文件: {trace_data_url} 或 {area_data_url}")
     sys.exit(1)
 
 traces = gpd.read_file(trace_data_url)
 area = gpd.read_file(area_data_url)
+
+# 数据清洗
+if area.crs != traces.crs:
+    if area.crs is None:
+        area.set_crs(traces.crs, inplace=True)
+    else:
+        area = area.to_crs(traces.crs)
+
+if traces.crs and traces.crs.is_geographic:
+    traces = traces.to_crs(epsg=3857)
+    area = area.to_crs(epsg=3857)
+
+area.geometry = area.geometry.make_valid()
+traces.geometry = traces.geometry.make_valid()
+
+area.geometry = area.geometry.apply(lambda g: g.convex_hull if 'Line' in g.geom_type else g)
+
+area = area[area.geom_type.str.contains('Polygon')]
+area = area[~area.geometry.is_empty]
+
+if len(area) == 0:
+    sys.exit(1)
+
+traces = traces[traces.geometry.is_valid]
+traces = traces[~traces.geometry.is_empty]
+
 traces.drop_duplicates(subset="geometry", inplace=True)
 traces.reset_index(drop=True, inplace=True)
 
