@@ -87,7 +87,7 @@ warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWar
 # THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11区块
 DATA_SOURCES = [
     {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "Yingmai 2 area in Tarim Basin.csv"},
-    {"traces": "KB11/KB11_traces.geojson", "area": "KB11/KB11_area.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
+    {"traces": "KB11/KB11_traces.geojson", "area": "KB11/my_area1.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
     {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "MY.csv"},
 ]
 
@@ -356,7 +356,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         csv_path = os.path.join(_PROGRAM_DIR, csv_name)
         if not os.path.isfile(csv_path):
             QMessageBox.warning(self, "未找到数据",
-                                f"未找到：{csv_name}\n请先运行 data export.py 为该区域生成网格 CSV。")
+                                f"未找到：{csv_name}\n请先运行 export_grid_csv.py 为该区域生成网格 CSV。")
             return None
         return csv_path
 
@@ -445,7 +445,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             if len(X) < 10:
                 QMessageBox.warning(
                     self, "样本过少",
-                    f"特征工程后有效样本仅 {len(X)} 个，至少需要约 10 个才能做 5 折 CV。请检查 CSV 或先运行 data export 生成完整网格数据。",
+                    f"特征工程后有效样本仅 {len(X)} 个，至少需要约 10 个才能做 5 折 CV。请检查 CSV 或先运行 export_grid_csv.py 生成完整网格数据。",
                 )
                 return
             res = train_xgboost_regression(X, y, n_splits=5, test_size=0.1)

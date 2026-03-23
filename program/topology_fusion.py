@@ -105,7 +105,7 @@ def run_fusion_pipeline(
     if n_samples < 2 or n_features < 2:
         raise ValueError(
             f"有效样本数或特征数不足（当前 {n_samples} 样本、{n_features} 特征）。"
-            f"PCA/聚类至少需要 2 样本和 2 特征。请换用数据量更大的区域（如英买2区、KB11），或先运行 data export.py 生成网格 CSV。"
+            f"PCA/聚类至少需要 2 样本和 2 特征。请换用数据量更大的区域（如英买2区、KB11），或先运行 export_grid_csv.py 生成网格 CSV。"
         )
     n_components = min(n_components, n_samples, n_features)
     X_pca, scaler, pca = fuse_with_pca(X, n_components=n_components, standardize=True)
