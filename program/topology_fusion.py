@@ -85,6 +85,15 @@ def interpret_clusters(
     return means
 
 
+def _check_min_data(df: pd.DataFrame, X: np.ndarray, used_cols: list, min_samples: int = 2, min_features: int = 2):
+    n_samples, n_features = X.shape
+    if n_samples < min_samples or n_features < min_features:
+        raise ValueError(
+            f"有效样本数或特征数不足（当前 {n_samples} 样本、{n_features} 特征）。"
+            f"融合/聚类至少需要 {min_samples} 样本和 {min_features} 特征。请换用数据量更大的区域（如英买2区、KB11）。"
+        )
+
+
 def run_fusion_pipeline(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
@@ -92,6 +101,13 @@ def run_fusion_pipeline(
     n_clusters: int = 4,
 ) -> Tuple[pd.DataFrame, StandardScaler, PCA, KMeans, pd.DataFrame]:
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
+    n_samples, n_features = X.shape
+    if n_samples < 2 or n_features < 2:
+        raise ValueError(
+            f"有效样本数或特征数不足（当前 {n_samples} 样本、{n_features} 特征）。"
+            f"PCA/聚类至少需要 2 样本和 2 特征。请换用数据量更大的区域（如英买2区、KB11），或先运行 data export.py 生成网格 CSV。"
+        )
+    n_components = min(n_components, n_samples, n_features)
     X_pca, scaler, pca = fuse_with_pca(X, n_components=n_components, standardize=True)
     labels, kmeans = cluster_labels(X_pca, n_clusters=n_clusters)
     for i in range(n_components):
@@ -159,6 +175,7 @@ def run_fusion_pipeline_ae(
     ae_epochs: int = 100,
 ) -> Tuple[pd.DataFrame, StandardScaler, KMeans, pd.DataFrame]:
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
+    _check_min_data(df, X, used_cols)
     Z, scaler, _ = fuse_with_autoencoder(X, n_latent=n_latent, standardize=True, epochs=ae_epochs)
     labels, kmeans = cluster_labels(Z, n_clusters=n_clusters)
     for i in range(n_latent):
@@ -203,6 +220,7 @@ def run_fusion_pipeline_umap(
     n_neighbors: int = 15,
 ) -> Tuple[pd.DataFrame, StandardScaler, object, KMeans, pd.DataFrame]:
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
+    _check_min_data(df, X, used_cols)
     X_umap, scaler, reducer = fuse_with_umap(
         X, n_components=n_components, standardize=True, n_neighbors=n_neighbors
     )
@@ -287,6 +305,7 @@ def run_fusion_pipeline_vae(
     vae_epochs: int = 150,
 ) -> Tuple[pd.DataFrame, StandardScaler, KMeans, pd.DataFrame]:
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
+    _check_min_data(df, X, used_cols)
     Z, scaler, _ = fuse_with_vae(X, n_latent=n_latent, standardize=True, epochs=vae_epochs)
     labels, kmeans = cluster_labels(Z, n_clusters=n_clusters)
     for i in range(n_latent):

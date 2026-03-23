@@ -83,37 +83,63 @@ except ImportError:
 
 warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
-# 数据源：取消注释要使用的区块，保证 name 与 traces/area 一致
-trace_data_url = "KB11/KB11_traces.geojson"
-area_data_url = "KB11/KB11_area.geojson"
-traces = gpd.read_file(trace_data_url)
-area = gpd.read_file(area_data_url)
-name = "KB11"
+# 数据源配置：迹线、研究区、显示名、对应的网格CSV（融合/ML用）
+# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11区块
+DATA_SOURCES = [
+    {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "Yingmai 2 area in Tarim Basin.csv"},
+    {"traces": "KB11/KB11_traces.geojson", "area": "KB11/KB11_area.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
+    {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "MY.csv"},
+]
 
-# trace_data_url = "THK/thkceshi-landmark1.geojson"
-# area_data_url = "THK/my_area.geojson"
-# traces = gpd.read_file(trace_data_url)
-# area = gpd.read_file(area_data_url)
-# name = "Yingmai 2 area in Tarim Basin"
+# 全局变量，由 load_data_source 更新
+traces = None
+area = None
+name = None
+rate = 1.0
+width = 0.0
+height = 0.0
+left = 0.0
+right = 0.0
+down = 0.0
+up = 0.0
 
-# trace_data_url = "MY/11.geojson"
-# area_data_url = "MY/my_area1.geojson"
-# traces = gpd.read_file(trace_data_url)
-# area = gpd.read_file(area_data_url)
-# name = "MY"
 
-traces.drop_duplicates(subset="geometry", inplace=True)
-traces.reset_index(drop=True, inplace=True)
+def load_data_source(index: int):
+    """按索引加载数据源，更新全局 traces/area/name/rate/width/height/left/right/down/up。"""
+    global traces, area, name, rate, width, height, left, right, down, up
+    if index < 0 or index >= len(DATA_SOURCES):
+        return False
+    cfg = DATA_SOURCES[index]
+    base = _PROGRAM_DIR
+    trace_path = os.path.join(base, cfg["traces"])
+    area_path = os.path.join(base, cfg["area"])
+    if not os.path.isfile(trace_path) or not os.path.isfile(area_path):
+        return False
+    traces = gpd.read_file(trace_path)
+    area = gpd.read_file(area_path)
+    name = cfg["name"]
+    traces.drop_duplicates(subset="geometry", inplace=True)
+    traces.reset_index(drop=True, inplace=True)
+    geometry = traces.geometry.tolist()
+    left = math.inf
+    right = -math.inf
+    down = math.inf
+    up = -math.inf
+    for one in geometry:
+        b = one.boundary.bounds
+        left = min(left, b[0])
+        right = max(right, b[2])
+        down = min(down, b[1])
+        up = max(up, b[3])
+    rate = (up - down) / (right - left) if (right - left) > 0 else 1.0
+    width = 0.01 * (right - left)
+    height = 0.01 * (up - down)
+    # 上述 left/right/down/up 已通过 global 写入模块全局
+    return True
 
-geometry = traces.geometry.tolist()
-left, right, down, up = math.inf, -math.inf, math.inf, -math.inf
-for one in geometry:
-    left = min(left, one.boundary.bounds[0])
-    right = max(right, one.boundary.bounds[2])
-    down = min(down, one.boundary.bounds[1])
-    up = max(up, one.boundary.bounds[3])
-rate = (up - down) / (right - left)
-width, height = 0.01 * (right - left), 0.01 * (up - down)
+
+# 启动时加载默认数据源（英买2区）
+load_data_source(0)
 
 
 def assign_colors(feature_type: str):
@@ -177,6 +203,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.stderr_redirector = StreamRedirector(is_error=True)
         self.stderr_redirector.text_written.connect(self.append_text)
         sys.stderr = self.stderr_redirector
+
+        # 1.5 绑定数据源切换
+        self.combo_data_source.currentIndexChanged.connect(self._on_data_source_changed)
 
         # 2. 绑定第一排：基础地质与拓扑绘图
         self.btn_yuantu.clicked.connect(self.run_yuantu)
@@ -318,13 +347,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
 
     def _get_guoji_csv(self):
-        csv_name = "Yingmai 2 area in Tarim Basin.csv"
-        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_name)
+        """根据当前数据源获取对应的网格 CSV 路径。"""
+        idx = self.combo_data_source.currentIndex()
+        if 0 <= idx < len(DATA_SOURCES):
+            csv_name = DATA_SOURCES[idx]["csv"]
+        else:
+            csv_name = "Yingmai 2 area in Tarim Basin.csv"
+        csv_path = os.path.join(_PROGRAM_DIR, csv_name)
         if not os.path.isfile(csv_path):
             QMessageBox.warning(self, "未找到数据",
-                                f"未找到：{csv_name}\n请先运行 data export.py 或将该文件放在 program 目录。")
+                                f"未找到：{csv_name}\n请先运行 data export.py 为该区域生成网格 CSV。")
             return None
         return csv_path
+
+    def _on_data_source_changed(self, index: int):
+        """数据源切换时重新加载迹线与研究区。"""
+        if load_data_source(index):
+            print(f"已切换数据源：{name}")
+        else:
+            QMessageBox.warning(self, "加载失败",
+                                f"无法加载选中的数据源，请确认 {DATA_SOURCES[index]['traces']} 和 {DATA_SOURCES[index]['area']} 存在。")
 
     def run_guoji_weighted_fusion(self):
         try:
@@ -486,8 +528,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         target_column, ok = QInputDialog.getText(
             self,
             "目标列名",
-            "请输入要预测的目标列（例如 Area）：",
-            text="Area",
+            "请输入要预测的目标列（需有数值变化，如 Fracture Intensity B21、Connections per Branch）。\n注意：不要选 Area，网格面积恒定会导致模型崩溃：",
+            text="Fracture Intensity B21",
         )
         if not ok or not target_column or not target_column.strip():
             return
@@ -1018,13 +1060,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "「UMAP」依赖 umap-learn。请执行：pip install umap-learn\n或先选择 PCA。",
             )
             return
-        csv_name = "Yingmai 2 area in Tarim Basin.csv"
-        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_name)
-        if not os.path.isfile(csv_path):
-            QMessageBox.warning(
-                self, "未找到数据",
-                f"未找到：{csv_name}\n请先运行 data export.py 或将该文件放在 program 目录下。",
-            )
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
             return
         warnings.filterwarnings("ignore")
         try:
@@ -1074,7 +1111,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             "【智能拓扑分析结果】",
             "",
             f"融合方式：{method_name}",
-            f"数据：{csv_name}",
+            f"数据：{os.path.basename(csv_path)}",
             f"有效网格数：{n_samples}",
             f"聚类数：{n_clusters}",
             f"新属性：{x_col}, {y_col}, cluster_id",

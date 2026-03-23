@@ -87,6 +87,12 @@ def select_features(
     若提供 y，则用互信息；否则只做方差筛选。
     返回 (X_selected, selected_indices, selected_names)。
     """
+    n_samples = X.shape[0]
+    if n_samples < 2:
+        # 单样本无法计算方差，跳过 VarianceThreshold
+        kept = list(range(X.shape[1]))
+        names = list(feature_names) if feature_names is not None else None
+        return X, kept, names
     # 方差筛选
     vt = VarianceThreshold(threshold=variance_threshold)
     X_var = vt.fit_transform(X)
@@ -125,6 +131,9 @@ def build_feature_matrix(
     if feature_columns is None:
         feature_columns = DEFAULT_FEATURE_COLUMNS
     df = load_raw(csv_path)
+    # 若目标列在特征中，排除以避免泄漏
+    if target_column and target_column in feature_columns:
+        feature_columns = [c for c in feature_columns if c != target_column]
     available = [c for c in feature_columns if c in df.columns]
     if not available:
         raise ValueError(f"CSV 中未找到任何特征列: {feature_columns}")
@@ -135,6 +144,12 @@ def build_feature_matrix(
         valid = ~np.isnan(y)
         X, y = X[valid], y[valid]
         df = df.loc[valid].copy()
+        # 目标列方差过小（如 Area 恒定）会导致 R² 爆炸、模型失效
+        if y is not None and len(y) > 1 and np.std(y) < 1e-10:
+            raise ValueError(
+                f"目标列「{target_column}」几乎无变化（方差≈0），无法用于回归。"
+                f"请选择有数值变化的列，如 Fracture Intensity B21、Connections per Branch 等。"
+            )
     elif drop_all_nan:
         valid = (X != 0).any(axis=1)
         X = X[valid]

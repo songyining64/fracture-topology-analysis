@@ -21,6 +21,22 @@ class Ui_MainWindow(object):
         self.top_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border-radius: 5px; }")
         self.top_layout = QtWidgets.QVBoxLayout(self.top_frame)
 
+        # --- 第零排：数据源切换 ---
+        self.row0_layout = QtWidgets.QHBoxLayout()
+        self.lbl_data_source = QtWidgets.QLabel("数据源：")
+        self.combo_data_source = QtWidgets.QComboBox()
+        self.combo_data_source.addItems([
+            "准噶尔盆地车莫古隆起 (THK)",
+            "柯坪断隆KB11",
+            "塔里木盆地英买2 (MY)",
+        ])
+        self.combo_data_source.setMinimumWidth(160)
+        self.combo_data_source.setToolTip("切换断裂迹线与研究区数据，融合分析将使用对应区域的网格CSV")
+        self.row0_layout.addWidget(self.lbl_data_source)
+        self.row0_layout.addWidget(self.combo_data_source)
+        self.row0_layout.addStretch()
+        self.top_layout.addLayout(self.row0_layout)
+
         # --- 第一排：基础地质与拓扑绘图 ---
         self.row1_layout = QtWidgets.QHBoxLayout()
         self.btn_yuantu = QtWidgets.QPushButton("原断裂数据地图")
