@@ -32,6 +32,34 @@ class Ui_MainWindow(object):
         ])
         self.combo_data_source.setMinimumWidth(160)
         self.combo_data_source.setToolTip("切换断裂迹线与研究区数据，融合分析将使用对应区域的网格CSV")
+
+        # 通用下拉框样式（确保下拉列表背景白色、文字深色，避免系统主题导致白字白底看不见）
+        _combo_style = """
+            QComboBox {
+                background-color: #ffffff;
+                color: #2c3e50;
+                border: 1px solid #bdc3c7;
+                border-radius: 4px;
+                padding: 3px 8px;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                border-color: #3498db;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #2c3e50;
+                selection-background-color: #3498db;
+                selection-color: #ffffff;
+                border: 1px solid #bdc3c7;
+                outline: none;
+            }
+        """
+        self.combo_data_source.setStyleSheet(_combo_style)
         self.row0_layout.addWidget(self.lbl_data_source)
         self.row0_layout.addWidget(self.combo_data_source)
         self.row0_layout.addStretch()
@@ -66,6 +94,8 @@ class Ui_MainWindow(object):
                                     "Branch Count"])
         self.btn_tuopushuxing = QtWidgets.QPushButton("显示拓扑属性数据")
 
+        self.combo_topo.setStyleSheet(_combo_style)
+        self.combo_params.setStyleSheet(_combo_style)
         for widget in [self.combo_topo, self.combo_params, self.btn_tuopushuxing]:
             widget.setMinimumHeight(35)
             self.row2_layout.addWidget(widget)
@@ -82,6 +112,7 @@ class Ui_MainWindow(object):
         self.btn_guoji_shap = QtWidgets.QPushButton("SHAP可解释分析")
         self.btn_spatial = QtWidgets.QPushButton("一键空间-拓扑融合")
 
+        self.combo_fusion.setStyleSheet(_combo_style)
         for widget in [self.combo_fusion, self.btn_ronghe, self.btn_guoji_weighted, self.btn_guoji_compare,
                        self.btn_guoji_train, self.btn_guoji_shap, self.btn_spatial]:
             widget.setMinimumHeight(35)
