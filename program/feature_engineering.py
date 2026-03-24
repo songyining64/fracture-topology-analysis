@@ -136,7 +136,10 @@ def build_feature_matrix(
     available = [c for c in feature_columns if c in df.columns]
     if not available:
         raise ValueError(f"CSV 中未找到任何特征列: {feature_columns}")
-    X = df[available].copy().fillna(0.0).values.astype(np.float64)
+    X_raw = df[available].copy()
+    # fillna 前记录真正全为 NaN 的行，避免把合法零值行误删
+    _all_nan_mask = X_raw.isna().all(axis=1)
+    X = X_raw.fillna(0.0).values.astype(np.float64)
     y = None
     if target_column and target_column in df.columns:
         y = df[target_column].values.astype(np.float64)
@@ -150,7 +153,8 @@ def build_feature_matrix(
                 f"请选择有数值变化的列，如 Fracture Intensity B21、Connections per Branch 等。"
             )
     elif drop_all_nan:
-        valid = (X != 0).any(axis=1)
+        # 仅过滤特征全为 NaN 的行，不把合法的 0 值行当作无效行
+        valid = ~_all_nan_mask.values
         X = X[valid]
         df = df.loc[valid].copy()
     X = handle_outliers(X, method=outlier_method)

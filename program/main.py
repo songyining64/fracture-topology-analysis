@@ -529,8 +529,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 if not ok or not target_col.strip():
                     return
                 target_col = target_col.strip()
-                r2 = build_feature_matrix(csv_path, target_column=target_col, out_processed_dir=None)
-                X, y = r2["X"], r2["y"]
+                r = build_feature_matrix(csv_path, target_column=target_col, out_processed_dir=None)
+                X, y = r["X"], r["y"]
                 if y is None:
                     QMessageBox.warning(self, "列名无效", f"在 CSV 中未找到列「{target_col}」，请确认列名拼写。")
                     return
@@ -1314,7 +1314,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 "请确保 topology_fusion 模块可用（与 main.py 同目录），并已安装 scikit-learn。",
             )
             return
-        method = self.combo_fusion.currentText()
+        method = self.combo_fusion.currentText().replace("融合方法: ", "").strip()
         if method in ("自编码器", "VAE") and not HAS_TORCH:
             QMessageBox.warning(
                 self, "需要安装 PyTorch",
