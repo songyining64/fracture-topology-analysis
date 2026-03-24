@@ -163,6 +163,9 @@ def run_spatial_topology_fusion_pipeline(
         except ImportError:
             gat_scores = None
             gat_metrics = {"error": "PyTorch / PyTorch Geometric 未安装，GAT 未运行"}
+        except Exception as e:
+            gat_scores = None
+            gat_metrics = {"error": f"GAT 运行时失败（已跳过，继续加权融合与 XGBoost）：{e}"}
     if gat_scores is not None:
         df["fusion_gat_score"] = gat_scores
 

@@ -104,6 +104,24 @@ down = 0.0
 up = 0.0
 
 
+def unify_traces_area_crs(traces: gpd.GeoDataFrame, area: gpd.GeoDataFrame):
+    """
+    将迹线与研究区对齐到同一 CRS。
+    fractopo 在 crop 前不会把两套不同 CRS 自动变换到同一空间，易导致裁剪为空。
+    """
+    from pyproj import CRS
+
+    tc, ac = traces.crs, area.crs
+    if tc is not None and ac is not None:
+        if not CRS.from_user_input(tc).equals(CRS.from_user_input(ac)):
+            traces = traces.to_crs(ac)
+    elif ac is not None and tc is None:
+        traces = traces.set_crs(ac)
+    elif tc is not None and ac is None:
+        area = area.set_crs(tc)
+    return traces, area
+
+
 def load_data_source(index: int):
     """按索引加载数据源，更新全局 traces/area/name/rate/width/height/left/right/down/up。"""
     global traces, area, name, rate, width, height, left, right, down, up
@@ -117,6 +135,7 @@ def load_data_source(index: int):
         return False
     traces = gpd.read_file(trace_path)
     area = gpd.read_file(area_path)
+    traces, area = unify_traces_area_crs(traces, area)
     name = cfg["name"]
     traces.drop_duplicates(subset="geometry", inplace=True)
     traces.reset_index(drop=True, inplace=True)
@@ -138,8 +157,39 @@ def load_data_source(index: int):
     return True
 
 
-# 启动时加载默认数据源（英买2区）
-load_data_source(0)
+def load_first_available_data_source() -> int:
+    """
+    依次尝试加载数据源，返回成功加载的索引，均失败返回 -1。
+    顺序：MY(2) → KB11(1) → THK(0)，优先使用仓库内通常齐全的英买2/柯坪数据，
+    避免 THK 缺 thkceshi-landmark1.geojson 时启动后 traces 为空。
+    """
+    for idx in (2, 1, 0):
+        if load_data_source(idx):
+            return idx
+    return -1
+
+
+EMPTY_CROP_MSG = (
+    "裁剪后迹线为空：迹线与当前研究区多边形无空间重叠，或数据/坐标系不匹配。\n\n"
+    "请检查：① 迹线 GeoJSON 与研究区是否属同一工区；② 在 QGIS 中二者是否相交；③ 导出时统一坐标系。"
+)
+
+
+def try_network(*args, **kwargs):
+    """
+    构造 fractopo.Network，捕获裁剪后迹线为空等错误，避免未处理异常导致进程退出。
+    返回 (network, None) 或 (None, 错误说明)。
+    """
+    try:
+        return Network(*args, **kwargs), None
+    except ValueError as e:
+        if "Empty trace GeoDataFrame after crop" in str(e):
+            return None, EMPTY_CROP_MSG
+        return None, str(e)
+
+
+# 启动时加载第一个可用的数据源（见 load_first_available_data_source）
+START_DATA_SOURCE_INDEX = load_first_available_data_source()
 
 
 def assign_colors(feature_type: str):
@@ -204,7 +254,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.stderr_redirector.text_written.connect(self.append_text)
         sys.stderr = self.stderr_redirector
 
-        # 1.5 绑定数据源切换
+        # 1.5 数据源下拉与已加载数据一致（默认优先 MY，避免 THK 缺文件时为空）
+        self.combo_data_source.blockSignals(True)
+        if START_DATA_SOURCE_INDEX >= 0:
+            self.combo_data_source.setCurrentIndex(START_DATA_SOURCE_INDEX)
+        self.combo_data_source.blockSignals(False)
+        if START_DATA_SOURCE_INDEX < 0:
+            self.append_text(
+                "【提示】未找到任何可用数据源。请在 program/THK、KB11、MY 下放置迹线与研究区 GeoJSON，"
+                "详见 README/运行说明。\n"
+            )
+
+        # 1.6 绑定数据源切换
         self.combo_data_source.currentIndexChanged.connect(self._on_data_source_changed)
 
         # 2. 绑定第一排：基础地质与拓扑绘图
@@ -411,6 +472,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             txt = "【融合对比：加权 vs GAT】\n\n"
             txt += f"加权得分 均值：{res['weighted_scores'].mean():.4f}\n"
             txt += f"GAT 得分 均值：{res['gat_scores'].mean():.4f}\n"
+            if res.get("gat_degraded") and res.get("gat_degraded_reason"):
+                txt += "\n【说明】\n" + res["gat_degraded_reason"] + "\n"
+                txt += "\n因此箱线图右侧「GAT 融合」常显示为一条贴在 0 的线，并非加权融合也有问题。\n"
             if res.get("boxplot_path") and os.path.isfile(res["boxplot_path"]):
                 txt += f"\n箱线图已保存：{res['boxplot_path']}\n"
                 plt.figure(figsize=(5, 4))
@@ -422,7 +486,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
             self.text_browser.moveCursor(QTextCursor.End)
-            QMessageBox.information(self, "完成", "融合对比已运行，箱线图已弹出。")
+            if res.get("gat_degraded"):
+                QMessageBox.warning(
+                    self,
+                    "融合对比完成（GAT 侧无效或退化）",
+                    "左侧已说明原因。若 GAT 全为 0，多半是未安装 torch_geometric；"
+                    "安装后仍是一条线则可能是 GAT 输出无方差。",
+                )
+            else:
+                QMessageBox.information(self, "完成", "融合对比已运行，箱线图已弹出。")
         except Exception as e:
             QMessageBox.critical(self, "运行出错", str(e))
 
@@ -619,15 +691,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_yuantu(self):
         warnings.filterwarnings("ignore")
-        network = Network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
+        # 原图仅展示迹线 + 研究区边界，无需构造 Network（Network 会裁剪迹线，CRS 不一致或不相交时会崩溃）
+        if traces is None or area is None or traces.empty:
+            QMessageBox.warning(self, "无数据", "请先切换数据源并确保迹线、研究区文件存在且非空。")
+            return
         fig, ax = plt.subplots(1, 1, figsize=(9, 9 * rate))
         traces.plot(ax=ax, color="blue")
         area.boundary.plot(ax=ax, color="red")
@@ -639,7 +706,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_fenleihou(self):
         warnings.filterwarnings("ignore")
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -648,6 +715,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
         network.branch_gdf.plot(colors=[assign_colors(bt) for bt in network.branch_types], ax=ax)
@@ -666,7 +736,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_tuopuhou1(self):
         warnings.filterwarnings("ignore")
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -675,6 +745,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
         network.trace_gdf.plot(ax=ax, linewidth=0.5)
@@ -698,7 +771,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         traces.drop_duplicates(subset="geometry", inplace=True)
         # Reset the index of the GeoDataFrame
         traces.reset_index(drop=True, inplace=True)
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -707,6 +780,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         # 定义节点类型到颜色的映射
         type_to_color = {
             'E': 'red',  # 假设E类型节点用红色表示
@@ -744,8 +820,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_tuopushuxing(self):
         warnings.filterwarnings("ignore")
-        network = Network(traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
-                          circular_target_area=False, snap_threshold=0.001, )
+        network, nw_err = try_network(
+            traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
+            circular_target_area=False, snap_threshold=0.001,
+        )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         parameters = 'parameters'.ljust(40, ' ') + 'values' + "\n"
         for key, value in network.parameters.items():
             parameters = parameters + str(key).ljust(40, ' ') + str(value) + "\n"
@@ -754,8 +835,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.text_browser.moveCursor(QTextCursor.End)
 
     def run_azimuth(self):
-        network = Network(
-            name="KB11",
+        network, nw_err = try_network(
+            name=name,
             trace_gdf=traces,
             area_gdf=area,
             truncate_traces=True,
@@ -765,6 +846,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             azimuth_set_names=("N-S", "E-W"),
             azimuth_set_ranges=((135, 45), (45, 135)),
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         pprint((network.azimuth_set_names, network.azimuth_set_ranges))
         pprint(network.trace_azimuth_set_counts)
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
@@ -801,7 +885,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def a(self):
         warnings.filterwarnings("ignore")
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -810,6 +894,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         fit, fig1, ax = network.plot_trace_lengths()
         # ax.set_aspect('equal')
         fit, fig2, ax = network.plot_branch_lengths()
@@ -819,7 +906,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_meiguitu(self):
         warnings.filterwarnings("ignore")
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -828,6 +915,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         azimuth_bin_dict, fig1, ax = network.plot_trace_azimuth()
         azimuth_bin_dict, fig2, ax = network.plot_branch_azimuth()
 
@@ -838,7 +928,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         setup_matplotlib_chinese()
 
-        network = Network(
+        network, nw_err = try_network(
             traces,
             area,
             name=name,
@@ -847,7 +937,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             circular_target_area=False,
             snap_threshold=0.001,
         )
-
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
 
         fig1, ax1, tax1 = network.plot_xyi()
         ax1.axis('off')
@@ -866,8 +958,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_guanxi(self):
         warnings.filterwarnings("ignore")
-        network = Network(traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
-                          circular_target_area=False, snap_threshold=0.001, )
+        network, nw_err = try_network(
+            traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
+            circular_target_area=False, snap_threshold=0.001,
+        )
+        if nw_err:
+            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+            return
         print(f"Azimuth set names: {network.azimuth_set_names}")
         print(f"Azimuth set ranges: {network.azimuth_set_ranges}")
         figs, fig_axes = network.plot_azimuth_crosscut_abutting_relationships()
@@ -1006,7 +1103,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             print(f"正在执行空间拓扑计算 (网格大小: {dynamic_width:.4f})...")
             QtWidgets.QApplication.processEvents()
 
-            network = Network(
+            network, nw_err = try_network(
                 traces,
                 area,
                 name=name,
@@ -1015,6 +1112,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 circular_target_area=False,
                 snap_threshold=0.001,
             )
+            if nw_err:
+                print(f"❌ {nw_err}")
+                QMessageBox.warning(self, "无法构建断裂网络", nw_err)
+                return
 
             sampled_grid = network.contour_grid(cell_width=dynamic_width)
             print("拓扑网格计算完成，准备渲染！")

@@ -163,8 +163,18 @@ def plot_fusion_comparison_boxplot(
     setup_matplotlib_chinese()
     labels = list(scores_dict.keys())
     data = [np.asarray(scores_dict[k]).ravel() for k in labels]
+    n_max = max(len(d) for d in data) if data else 0
+    # 样本多时须线外的「离群点」默认画成圆点；成千上万点重叠会像黑条，故大样本不画离群点
+    show_fliers = n_max <= 300
+    flier_kw = dict(marker="o", markersize=2, alpha=0.25, markeredgecolor="0.4", linestyle="none")
     fig, ax = plt.subplots(figsize=(5, 4))
-    bp = ax.boxplot(data, labels=labels, patch_artist=True)
+    bp = ax.boxplot(
+        data,
+        labels=labels,
+        patch_artist=True,
+        showfliers=show_fliers,
+        flierprops=flier_kw if show_fliers else None,
+    )
     for patch in bp["boxes"]:
         patch.set_facecolor("lightblue")
     ax.set_ylabel("融合得分")

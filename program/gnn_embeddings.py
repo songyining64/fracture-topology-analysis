@@ -70,28 +70,31 @@ def gnn_embedding_graphsage(
             super().__init__()
             self.conv1 = SAGEConv(in_dim, hidden_dim)
             self.conv2 = SAGEConv(hidden_dim, out_dim)
+            # 嵌入维 out_dim 与输入维 in_dim 通常不同，不能直接 MSE(z, x)；用线性解码重构
+            self.dec = nn.Linear(out_dim, in_dim)
 
         def forward(self, x, edge_index):
-            x = F.relu(self.conv1(x, edge_index))
-            x = self.conv2(x, edge_index)
-            return x
+            h = F.relu(self.conv1(x, edge_index))
+            z = self.conv2(h, edge_index)
+            recon = self.dec(z)
+            return z, recon
 
-    model = GraphSAGEEncoder(data.num_features).to(device)
+    in_dim = data.num_features
+    model = GraphSAGEEncoder(in_dim).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_history = []
-    # 无监督自编码式目标：重构自身特征
+    # 无监督自编码式目标：解码后重构自身特征
     for _ in range(epochs):
         model.train()
         opt.zero_grad()
-        z = model(data.x, data.edge_index)
-        recon = z  # 这里可替换为更复杂的解码器；简单起见使用 identity
+        z, recon = model(data.x, data.edge_index)
         loss = F.mse_loss(recon, data.x)
         loss.backward()
         opt.step()
         loss_history.append(loss.item())
     model.eval()
     with torch.no_grad():
-        Z = model(data.x, data.edge_index)
+        Z, _ = model(data.x, data.edge_index)
         # 单图场景下，batch 全 0
         batch = Z.new_zeros(Z.size(0), dtype=torch.long)
         g = global_mean_pool(Z, batch)
@@ -129,27 +132,29 @@ def gnn_embedding_gat(
             super().__init__()
             self.conv1 = GATConv(in_dim, hidden_dim, heads=heads, dropout=0.1)
             self.conv2 = GATConv(hidden_dim * heads, out_dim, heads=1, concat=False, dropout=0.1)
+            self.dec = nn.Linear(out_dim, in_dim)
 
         def forward(self, x, edge_index):
-            x = F.elu(self.conv1(x, edge_index))
-            x = self.conv2(x, edge_index)
-            return x
+            h = F.elu(self.conv1(x, edge_index))
+            z = self.conv2(h, edge_index)
+            recon = self.dec(z)
+            return z, recon
 
-    model = GATEncoder(data.num_features).to(device)
+    in_dim = data.num_features
+    model = GATEncoder(in_dim).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_history = []
     for _ in range(epochs):
         model.train()
         opt.zero_grad()
-        z = model(data.x, data.edge_index)
-        recon = z
+        z, recon = model(data.x, data.edge_index)
         loss = F.mse_loss(recon, data.x)
         loss.backward()
         opt.step()
         loss_history.append(loss.item())
     model.eval()
     with torch.no_grad():
-        Z = model(data.x, data.edge_index)
+        Z, _ = model(data.x, data.edge_index)
         batch = Z.new_zeros(Z.size(0), dtype=torch.long)
         g = global_mean_pool(Z, batch)
     Z_np = Z.cpu().numpy()
@@ -191,27 +196,29 @@ def gnn_embedding_gin(
             )
             self.conv1 = GINConv(nn1)
             self.conv2 = GINConv(nn2)
+            self.dec = nn.Linear(out_dim, in_dim)
 
         def forward(self, x, edge_index):
-            x = F.relu(self.conv1(x, edge_index))
-            x = self.conv2(x, edge_index)
-            return x
+            h = F.relu(self.conv1(x, edge_index))
+            z = self.conv2(h, edge_index)
+            recon = self.dec(z)
+            return z, recon
 
-    model = GINEncoder(data.num_features).to(device)
+    in_dim = data.num_features
+    model = GINEncoder(in_dim).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_history = []
     for _ in range(epochs):
         model.train()
         opt.zero_grad()
-        z = model(data.x, data.edge_index)
-        recon = z
+        z, recon = model(data.x, data.edge_index)
         loss = F.mse_loss(recon, data.x)
         loss.backward()
         opt.step()
         loss_history.append(loss.item())
     model.eval()
     with torch.no_grad():
-        Z = model(data.x, data.edge_index)
+        Z, _ = model(data.x, data.edge_index)
         batch = Z.new_zeros(Z.size(0), dtype=torch.long)
         g = global_mean_pool(Z, batch)
     Z_np = Z.cpu().numpy()

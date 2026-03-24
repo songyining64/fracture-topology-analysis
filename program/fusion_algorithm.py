@@ -261,11 +261,36 @@ def run_fusion_comparison_experiment(
     weighted_scores = weighted_fusion(X, names, high_value_weight=high_value_weight)
     # 网格图 + GAT
     edge_index, _ = build_grid_graph(n_nodes=n)
+    gat_import_error = False
+    gat_runtime_error: Optional[str] = None
     try:
         gat_scores, _, gat_metrics = gat_fusion(X, edge_index, epochs=gat_epochs, out_channels=1)
     except ImportError:
         gat_scores = np.zeros(n)  # 无 PyG 时用占位
         gat_metrics = {}
+        gat_import_error = True
+    except Exception as e:
+        gat_scores = np.zeros(n)
+        gat_metrics = {"error": str(e)}
+        gat_runtime_error = str(e)
+    gat_arr = np.asarray(gat_scores).ravel()
+    gat_ptp = float(np.ptp(gat_arr)) if gat_arr.size else 0.0
+    gat_degraded_reason = None
+    if gat_import_error:
+        gat_degraded_reason = (
+            "未安装 PyTorch / PyTorch Geometric 时，GAT 分支会用全 0 占位，"
+            "箱线图右侧会塌成一条线。请执行：pip install torch torch_geometric"
+        )
+    elif gat_runtime_error is not None:
+        gat_degraded_reason = (
+            "GAT 训练或推理失败，已用全 0 占位以便完成对比图。"
+            f" 原因：{gat_runtime_error}"
+        )
+    elif gat_ptp < 1e-10:
+        gat_degraded_reason = (
+            "GAT 隐向量无方差（输出为常数或全零），min-max 后仍无法区分样本；"
+            "可能与训练未收敛、网格图与样本顺序不匹配或样本过少有关。"
+        )
     df = r["df"].copy()
     df["weighted_fusion_score"] = weighted_scores
     df["gat_fusion_score"] = gat_scores
@@ -287,6 +312,8 @@ def run_fusion_comparison_experiment(
         "df_with_both": df,
         "boxplot_path": boxplot_path,
         "gat_metrics": gat_metrics,
+        "gat_degraded": gat_degraded_reason is not None,
+        "gat_degraded_reason": gat_degraded_reason,
     }
 
 
