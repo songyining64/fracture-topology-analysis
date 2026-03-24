@@ -968,7 +968,47 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         print(f"Azimuth set names: {network.azimuth_set_names}")
         print(f"Azimuth set ranges: {network.azimuth_set_ranges}")
         figs, fig_axes = network.plot_azimuth_crosscut_abutting_relationships()
+        # 覆盖 fractopo 默认配色：cross-cut / A→B / B→A
+        relationship_colors = ("#4A5568", "#2B6CB0", "#63B3ED")
         for fig in figs:
+            for ax in fig.axes:
+                if not hasattr(ax, "containers"):
+                    continue
+                for container in ax.containers:
+                    # 该图每个子图仅有一组3根柱子
+                    if len(container) >= 3:
+                        for patch, color in zip(container[:3], relationship_colors):
+                            patch.set_facecolor(color)
+                            patch.set_edgecolor("black")
+                        break
+                legend = ax.get_legend()
+                if legend is not None:
+                    # 显式同步图例色块，避免与柱体颜色不一致
+                    handles = getattr(legend, "legend_handles", None)
+                    if handles is None:
+                        handles = getattr(legend, "legendHandles", [])
+                    for handle, color in zip(handles, relationship_colors):
+                        if hasattr(handle, "set_facecolor"):
+                            handle.set_facecolor(color)
+                        if hasattr(handle, "set_edgecolor"):
+                            handle.set_edgecolor("black")
+                # 弱化 fractopo 默认黄底注释框，避免视觉干扰与裁切
+                for txt in ax.texts:
+                    txt.set_bbox(dict(boxstyle="square", facecolor="white", edgecolor="#9CA3AF", alpha=0.9, pad=0.35))
+                    txt.set_clip_on(False)
+        for fig in figs:
+            # 标题显示当前数据源名称，并在柱形图上端居中
+            if hasattr(fig, "_suptitle") and fig._suptitle is not None:
+                # 保持中文标题，并沿用全局 matplotlib 中文字体配置
+                fig._suptitle.set_text(str(name))
+                zh_fonts = plt.rcParams.get("font.sans-serif", [])
+                if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0:
+                    fig._suptitle.set_fontfamily(zh_fonts[0])
+                fig._suptitle.set_bbox(dict(boxstyle="square", facecolor="white", edgecolor="#9CA3AF", alpha=0.9))
+                fig._suptitle.set_x(0.5)
+                fig._suptitle.set_y(0.98)
+                fig._suptitle.set_ha("center")
+            fig.subplots_adjust(top=0.86, right=0.88, wspace=0.35)
             fig.set_size_inches(15, 7)
 
         if figs:
@@ -980,7 +1020,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         traces.plot(ax=axes[0], color="blue", label="Traces")
         area.boundary.plot(ax=axes[0], color="black", label="Target Area", linestyle="dashed")
         axes[0].set_title("Traces & Target Area")
-        nodes.plot(ax=axes[1], column="Class", zorder=10, legend=True, categorical=True, markersize=7)
+        nodes.plot(ax=axes[1], column="Class", zorder=10, legend=False, categorical=True, markersize=7)
         axes[1].set_title("Branches & Nodes & Area")
         area.boundary.plot(ax=axes[1], color="black", linestyle="dashed")
         axes[1].set_xlim(*axes[0].get_xlim())
@@ -990,11 +1030,27 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             ax.set_ylim(down - height, up + height)
             area.boundary.plot(ax=ax, color="red")
             ax.set_aspect('equal')
-        legend = axes[1].get_legend()
-        for handle in legend.legend_handles:
-            handle._sizes = [20]
-        legend.set_bbox_to_anchor((1, 0.5))
-        plt.tight_layout()
+
+        # 手动构建图例，避免自动图例标题乱码/方框字与裁切问题
+        class_order = [c for c in ("X", "Y", "I", "E") if c in nodes["Class"].dropna().unique()]
+        if class_order:
+            cmap = plt.get_cmap("tab10")
+            handles = [
+                Line2D([0], [0], marker="o", linestyle="", markersize=7,
+                       markerfacecolor=cmap(i), markeredgecolor="black", label=cls)
+                for i, cls in enumerate(class_order)
+            ]
+            legend = axes[1].legend(
+                handles=handles,
+                title="Node Type",
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                frameon=True,
+            )
+            for handle in legend.legend_handles:
+                if hasattr(handle, "_sizes"):
+                    handle._sizes = [20]
+        fig.subplots_adjust(right=0.82, wspace=0.25)
         self.embed_figure(fig)
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):
