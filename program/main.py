@@ -906,6 +906,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_meiguitu(self):
         warnings.filterwarnings("ignore")
+        setup_matplotlib_chinese()
         network, nw_err = try_network(
             traces,
             area,
@@ -920,6 +921,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         azimuth_bin_dict, fig1, ax = network.plot_trace_azimuth()
         azimuth_bin_dict, fig2, ax = network.plot_branch_azimuth()
+        # 仅覆盖玫瑰图配色，不改动其他绘图逻辑
+        for one_ax in fig1.axes:
+            for patch in one_ax.patches:
+                patch.set_facecolor("#2C3E50")  # 迹线玫瑰图填充
+                patch.set_edgecolor("black")    # 迹线玫瑰图边框
+                patch.set_alpha(0.65)           # 降低深蓝灰不透明度
+        for one_ax in fig2.axes:
+            for patch in one_ax.patches:
+                patch.set_facecolor("#AED6F1")  # 分支玫瑰图填充
+                patch.set_edgecolor("#2E86C1")  # 分支玫瑰图边框（更深）
+                patch.set_alpha(0.65)           # 与迹线玫瑰图透明度一致
+        zh_fonts = plt.rcParams.get("font.sans-serif", [])
+        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+        # 覆盖 fractopo 默认标题字体，确保数据源中文名正常显示
+        for fig, title_text in (
+            (fig1, f"迹线玫瑰图 - {name}"),
+            (fig2, f"分支玫瑰图 - {name}"),
+        ):
+            for one_ax in fig.axes:
+                one_ax.set_title(title_text, fontfamily=font_family, fontsize=14)
 
         self.embed_figure([fig1, fig2])
 
