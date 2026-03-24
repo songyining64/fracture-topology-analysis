@@ -11,9 +11,9 @@ from fractopo import Network
 # 区域配置（与 main.py DATA_SOURCES 对应）
 # THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11
 REGIONS = {
-    "THK": {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "Yingmai 2 area in Tarim Basin.csv"},
+    "THK": {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
     "KB11": {"traces": "KB11/KB11_traces.geojson", "area": "KB11/my_area1.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
-    "MY": {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "MY.csv"},
+    "MY": {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
 }
 
 region_key = (sys.argv[1] if len(sys.argv) > 1 else "THK").upper()
@@ -27,14 +27,6 @@ trace_data_url = os.path.join(base, cfg["traces"])
 area_data_url = os.path.join(base, cfg["area"])
 name = cfg["name"]
 out_csv_name = cfg.get("csv", name + ".csv")
-
-
-if not os.path.isfile(trace_data_url) or not os.path.isfile(area_data_url):
-    print(f"未找到数据文件: {trace_data_url} 或 {area_data_url}")
-    sys.exit(1)
-
-traces = gpd.read_file(trace_data_url)
-area = gpd.read_file(area_data_url)
 
 
 if not os.path.isfile(trace_data_url) or not os.path.isfile(area_data_url):

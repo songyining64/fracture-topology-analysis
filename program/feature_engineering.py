@@ -97,16 +97,15 @@ def select_features(
     vt = VarianceThreshold(threshold=variance_threshold)
     X_var = vt.fit_transform(X)
     kept = np.where(vt.get_support())[0].tolist()
-    names = [feature_names[i] for i in kept] if feature_names else None
+    names_var = [feature_names[i] for i in kept] if feature_names else None
     if y is None or n_select_mi is None or n_select_mi >= len(kept):
-        return X_var, kept, names
-    # 互信息选 TopK（top_idx 为方差筛选后列索引）
+        return X_var, kept, names_var
+    # 互信息选 TopK（top_idx 为方差筛选后的局部列索引）
     mi = mutual_info_regression(X_var, y, random_state=random_state)
     top_k = min(n_select_mi, len(kept))
     top_idx = np.argsort(mi)[-top_k:]
     X_mi = X_var[:, top_idx]
     kept_mi = [kept[i] for i in top_idx]
-    names_var = [names[i] for i in kept] if names else None
     names_mi = [names_var[i] for i in top_idx] if names_var else None
     return X_mi, kept_mi, names_mi
 

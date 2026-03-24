@@ -86,9 +86,9 @@ warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWar
 # 数据源配置：迹线、研究区、显示名、对应的网格CSV（融合/ML用）
 # THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11区块
 DATA_SOURCES = [
-    {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "Yingmai 2 area in Tarim Basin.csv"},
+    {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
     {"traces": "KB11/KB11_traces.geojson", "area": "KB11/my_area1.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
-    {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "MY.csv"},
+    {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
 ]
 
 # 全局变量，由 load_data_source 更新
@@ -519,7 +519,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         try:
             r = build_feature_matrix(csv_path, out_processed_dir=None)
             X, y = r["X"], r["y"]
-            if y is None: y = r["X"][:, 0]
+            if y is None:
+                target_col, ok = QInputDialog.getText(
+                    self,
+                    "请指定目标列",
+                    "未检测到目标列。请输入要预测的列名\n（如 Fracture Intensity B21、Connections per Branch）：",
+                    text="Fracture Intensity B21",
+                )
+                if not ok or not target_col.strip():
+                    return
+                target_col = target_col.strip()
+                r2 = build_feature_matrix(csv_path, target_column=target_col, out_processed_dir=None)
+                X, y = r2["X"], r2["y"]
+                if y is None:
+                    QMessageBox.warning(self, "列名无效", f"在 CSV 中未找到列「{target_col}」，请确认列名拼写。")
+                    return
 
             res = train_xgboost_regression(X, y, n_splits=5, test_size=0.1)
             model_dir = os.path.join(os.path.dirname(csv_path), "model")
@@ -790,27 +804,29 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             'X': 'blue',  # 假设X类型节点用蓝色表示
             'Y': 'yellow',  # 假设Y类型节点用黄色表示
         }
-        type_to_color2 = {'CC': 'red', 'CI': 'green', 'II': 'blue', }
+        type_to_color2 = {'CC': 'red', 'CI': 'green', 'II': 'blue'}
         # 定义节点类型到形状的映射
         type_to_shape = {
-            'E': 'o',  # 假设E类型节点用圆圈表示
-            'I': 'o',  # 假设I类型节点用正方形表示
-            'X': '^',  # 假设X类型节点用三角形表示
-            'Y': '*'  # 假设Y类型节点用星号表示
+            'E': 'o',
+            'I': 'o',
+            'X': '^',
+            'Y': '*',
         }
         # 开始绘图
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
 
+        # 按分支类型分组绘制（branch_gdf），每类只画一次
+        for branch_type, color in type_to_color2.items():
+            subset = network.branch_gdf[network.branch_gdf['Class'] == branch_type]
+            if not subset.empty:
+                subset.plot(ax=ax, color=color, linewidth=1, label=branch_type)
+
         # 遍历每个节点类型，绘制对应类型的节点
         for node_type in type_to_color.keys():
-            # 选取当前节点类型的节点 Traces
             nodes = network.node_gdf[network.node_gdf['Class'] == node_type]
-            # 使用相应的颜色和形状绘制节点
-            ax.scatter(nodes.geometry.x, nodes.geometry.y, s=50,
-                       c=type_to_color[node_type], marker=type_to_shape[node_type], label=node_type)
-        for branch_type in type_to_color2.keys():
-            network.trace_gdf.plot(colors=[assign_colors(bt) for bt in network.branch_types], ax=ax, linewidth=1,
-                                   label=branch_type)
+            if not nodes.empty:
+                ax.scatter(nodes.geometry.x, nodes.geometry.y, s=50,
+                           c=type_to_color[node_type], marker=type_to_shape[node_type], label=node_type, zorder=5)
         area.boundary.plot(ax=ax, color="red")
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
@@ -1211,29 +1227,30 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         QtWidgets.QApplication.processEvents()
 
         try:
-            global traces
-            global area
+            traces_local = traces  # 初始化，预处理块内会重新赋值为副本
 
             try:
-                bounds = traces.total_bounds
+                traces_local = traces.copy()
+                bounds = traces_local.total_bounds
 
                 if area is not None:
                     minx, miny, maxx, maxy = area.total_bounds
-                    spatial_index = traces.sindex
+                    spatial_index = traces_local.sindex
                     possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
-                    original_len = len(traces)
-                    traces = traces.iloc[possible_matches_index]
+                    traces_local = traces_local.iloc[possible_matches_index]
 
                 map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
                 dp_tolerance = map_span * 0.002
 
                 if dp_tolerance > 0:
-                    traces.geometry = traces.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
+                    traces_local = traces_local.copy()
+                    traces_local.geometry = traces_local.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
 
             except Exception as e:
                 print(f"算法预处理跳过。原因: {e}")
+                traces_local = traces.copy()
 
-            bounds = traces.total_bounds
+            bounds = traces_local.total_bounds
             dynamic_width = (bounds[2] - bounds[0]) / 20.0
 
             if dynamic_width <= 0:
@@ -1243,7 +1260,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QtWidgets.QApplication.processEvents()
 
             network, nw_err = try_network(
-                traces,
+                traces_local,
                 area,
                 name=name,
                 determine_branches_nodes=True,

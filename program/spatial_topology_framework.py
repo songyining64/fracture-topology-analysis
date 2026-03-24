@@ -97,28 +97,36 @@ def run_spatial_topology_fusion_pipeline(
     if y is None:
         raise ValueError("run_spatial_topology_fusion_pipeline 需要提供有效的 target_column。")
 
-    # 可选：多尺度空间特征金字塔（仅当样本数能构成规则网格时生效）
+    # 可选：多尺度空间特征金字塔
     if use_multiscale:
         n_samples = X.shape[0]
         n_rows = int(np.sqrt(n_samples)) or 1
         n_cols = (n_samples + n_rows - 1) // n_rows
-        if n_rows * n_cols == n_samples:
+        # 允许网格略大于样本数（末尾不足的格子用零填充）
+        padded = n_rows * n_cols
+        if padded > n_samples:
+            X_pad = np.zeros((padded, X.shape[1]), dtype=X.dtype)
+            X_pad[:n_samples] = X
+        else:
+            X_pad = X
+        try:
             X_ms, suffixes = build_multiscale_pyramid(
-                X,
+                X_pad,
                 n_rows=n_rows,
                 n_cols=n_cols,
                 scales=fusion_cfg.get("multiscale_scales", [1, 2, 4]),
                 mode=fusion_cfg.get("multiscale_mode", "mean"),
             )
+            # 还原到实际样本数
+            X_ms = X_ms[:n_samples]
             new_feature_names = []
             for suf in suffixes:
-                new_feature_names.extend([f"{name}_{suf}" for name in feature_names])
+                new_feature_names.extend([f"{fn}_{suf}" for fn in feature_names])
             X = X_ms
             feature_names = new_feature_names
-        else:
-            # 样本数非规则网格（如过滤后数量变化），跳过多尺度
+        except Exception as _ms_err:
             import warnings as _w
-            _w.warn(f"样本数 {n_samples} 无法构成规则网格 (n_rows*n_cols={n_rows}*{n_cols}={n_rows*n_cols})，跳过多尺度金字塔。")
+            _w.warn(f"多尺度金字塔构建失败（已跳过）：{_ms_err}")
 
     # 2. 加权融合：凸显高价值拓扑属性（规则版 + 自适应版）
     high_value_weight = float(fusion_cfg.get("high_value_weight", 1.5))
