@@ -902,6 +902,55 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fit, fig2, ax = network.plot_branch_lengths()
         # ax.set_aspect('equal')
 
+        # 长度分布拟合线配色：主模型/对比模型，并降低饱和感（alpha）
+        fit_line_colors = {
+            "power": "#d62728",   # Power-law
+            "lognormal": "#1f77b4",
+            "exponential": "#2ca02c",
+        }
+        for fig in (fig1, fig2):
+            for one_ax in fig.axes:
+                for line in one_ax.get_lines():
+                    label = (line.get_label() or "").lower()
+                    if "power" in label:
+                        line.set_color(fit_line_colors["power"])
+                        line.set_alpha(0.7)
+                    elif "lognormal" in label:
+                        line.set_color(fit_line_colors["lognormal"])
+                        line.set_alpha(0.7)
+                    elif "exponential" in label:
+                        line.set_color(fit_line_colors["exponential"])
+                        line.set_alpha(0.7)
+                # 同步图例与注释文字颜色
+                legend = one_ax.get_legend()
+                if legend is not None:
+                    handles = getattr(legend, "legend_handles", None)
+                    if handles is None:
+                        handles = getattr(legend, "legendHandles", [])
+                    for handle, txt in zip(handles, legend.get_texts()):
+                        tlabel = (txt.get_text() or "").lower()
+                        if "power" in tlabel:
+                            color = fit_line_colors["power"]
+                        elif "lognormal" in tlabel:
+                            color = fit_line_colors["lognormal"]
+                        elif "exponential" in tlabel:
+                            color = fit_line_colors["exponential"]
+                        else:
+                            continue
+                        if hasattr(handle, "set_color"):
+                            handle.set_color(color)
+                        if hasattr(handle, "set_alpha"):
+                            handle.set_alpha(0.7)
+                        txt.set_color(color)
+                for txt in one_ax.texts:
+                    tlabel = (txt.get_text() or "").lower()
+                    if "power" in tlabel:
+                        txt.set_color(fit_line_colors["power"])
+                    elif "lognormal" in tlabel:
+                        txt.set_color(fit_line_colors["lognormal"])
+                    elif "exponential" in tlabel:
+                        txt.set_color(fit_line_colors["exponential"])
+
         self.embed_figure([fig1, fig2])
 
     def run_meiguitu(self):
@@ -974,6 +1023,19 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fig2.set_size_inches(9, 9)
         ax2.set_position([0.18, 0.16, 0.64, 0.64])
         fig2.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.90)
+
+        # 三元图统计框样式优化：去掉底色并增大内边距
+        for fig in (fig1, fig2):
+            for one_ax in fig.axes:
+                for txt in one_ax.texts:
+                    txt.set_bbox(
+                        dict(
+                            boxstyle="square,pad=0.75",
+                            facecolor="none",
+                            edgecolor="#9CA3AF",
+                            alpha=1.0,
+                        )
+                    )
 
         self.embed_figure([fig1, fig2])
 
