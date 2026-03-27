@@ -136,7 +136,7 @@ python main.py
 
 ### 4.3 配置驱动
 
-通过 `config.yaml` 统一管理高价值属性、融合权重、训练参数等，便于调优与复现。
+通过 `config.yaml` （program下）统一管理高价值属性、融合权重、训练参数等，便于调优与复现。
 
 ---
 
@@ -203,6 +203,14 @@ pip install -r requirements.txt
 
 # 运行主界面
 cd program && python main.py
+
+#indows 若 python 无法运行，可改用：
+
+cd program
+py main.py
+#或在项目根目录启动（无需先cd program）
+
+py program/main.py
 
 # 选择数据源 → 点击「原断裂数据地图」等按钮进行拓扑分析
 # 或运行「一键空间-拓扑融合」进行完整 ML 流程（需先 export_grid_csv 生成对应区域 CSV）
