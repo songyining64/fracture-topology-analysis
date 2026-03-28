@@ -31,6 +31,7 @@ class Ui_MainWindow(object):
             "塔里木盆地英买2 (MY)",
         ])
         self.combo_data_source.setMinimumWidth(160)
+        self.combo_data_source.setMinimumHeight(35)
         self.combo_data_source.setToolTip("切换断裂迹线与研究区数据，融合分析将使用对应区域的网格CSV")
 
         # 通用下拉框样式（确保下拉列表背景白色、文字深色，避免系统主题导致白字白底看不见）
@@ -59,7 +60,15 @@ class Ui_MainWindow(object):
                 outline: none;
             }
         """
-        self.combo_data_source.setStyleSheet(_combo_style)
+        # 仅数据源下拉略放大字号（框内与弹出列表），其余下拉仍用 _combo_style
+        _combo_style_data_source = _combo_style.replace(
+            "font-size: 13px;",
+            "font-size: 15px;",
+        ).replace(
+            "QComboBox QAbstractItemView {\n                background-color:",
+            "QComboBox QAbstractItemView {\n                font-size: 15px;\n                background-color:",
+        )
+        self.combo_data_source.setStyleSheet(_combo_style_data_source)
         self.row0_layout.addWidget(self.lbl_data_source)
         self.row0_layout.addWidget(self.combo_data_source)
         self.row0_layout.addStretch()
@@ -135,7 +144,7 @@ class Ui_MainWindow(object):
             "border: 1px solid #dcdde1; "
             "border-radius: 4px; "
             "font-family: Consolas, 'Courier New', monospace; "
-            "font-size: 13px; "
+            "font-size: 17px; "
             "padding: 8px; "
             "line-height: 1.5;"
         )
