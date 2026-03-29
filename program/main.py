@@ -29,6 +29,22 @@ if sys.platform == "darwin":
             os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugin_path
             break
 
+# 确保 matplotlib 缓存目录可写（必须在 import matplotlib 之前），
+# 修复 macOS 上 ~/.matplotlib 因 com.apple.provenance 扩展属性导致不可写，
+# 进而每次重建临时缓存、字体扫描极慢、中文无法显示的问题。
+if "MPLCONFIGDIR" not in os.environ:
+    _mpl_default = os.path.join(os.path.expanduser("~"), ".matplotlib")
+    _mpl_test = os.path.join(_mpl_default, ".write_test")
+    try:
+        os.makedirs(_mpl_default, exist_ok=True)
+        with open(_mpl_test, "w") as _f:
+            _f.write("ok")
+        os.remove(_mpl_test)
+    except OSError:
+        _mpl_fallback = os.path.join(os.path.expanduser("~"), ".cache", "matplotlib_fracture")
+        os.makedirs(_mpl_fallback, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = _mpl_fallback
+
 import matplotlib
 
 matplotlib.use('Qt5Agg')
