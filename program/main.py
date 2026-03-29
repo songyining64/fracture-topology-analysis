@@ -84,10 +84,9 @@ except ImportError:
 warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
 # 数据源配置：迹线、研究区、显示名、对应的网格CSV（融合/ML用）
-# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11区块
+# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2
 DATA_SOURCES = [
     {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
-    {"traces": "KB11/KB11_traces.geojson", "area": "KB11/my_area1.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
     {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
 ]
 
@@ -160,10 +159,10 @@ def load_data_source(index: int):
 def load_first_available_data_source() -> int:
     """
     依次尝试加载数据源，返回成功加载的索引，均失败返回 -1。
-    顺序：MY(2) → KB11(1) → THK(0)，优先使用仓库内通常齐全的英买2/柯坪数据，
+    顺序：MY(1) → THK(0)，优先使用仓库内通常齐全的英买2数据，
     避免 THK 缺 thkceshi-landmark1.geojson 时启动后 traces 为空。
     """
-    for idx in (2, 1, 0):
+    for idx in (1, 0):
         if load_data_source(idx):
             return idx
     return -1
@@ -286,7 +285,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.combo_data_source.blockSignals(False)
         if START_DATA_SOURCE_INDEX < 0:
             self.append_text(
-                "【提示】未找到任何可用数据源。请在 program/THK、KB11、MY 下放置迹线与研究区 GeoJSON，"
+                "【提示】未找到任何可用数据源。请在 program/THK、MY 下放置迹线与研究区 GeoJSON，"
                 "详见 README/运行说明。\n"
             )
 

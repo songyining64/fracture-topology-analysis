@@ -27,7 +27,6 @@ class Ui_MainWindow(object):
         self.combo_data_source = QtWidgets.QComboBox()
         self.combo_data_source.addItems([
             "准噶尔盆地车莫古隆起 (THK)",
-            "柯坪断隆KB11",
             "塔里木盆地英买2 (MY)",
         ])
         self.combo_data_source.setMinimumWidth(160)

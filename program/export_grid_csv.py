@@ -1,6 +1,6 @@
 """
 为指定区域生成网格拓扑 CSV，供融合/ML 使用。
-用法：python export_grid_csv.py [THK|KB11|MY]  默认 THK
+用法：python export_grid_csv.py [THK|MY]  默认 THK
 """
 import sys
 import os
@@ -9,16 +9,15 @@ import pandas as pd
 from fractopo import Network
 
 # 区域配置（与 main.py DATA_SOURCES 对应）
-# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2, KB11=柯坪断隆KB11
+# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2
 REGIONS = {
     "THK": {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
-    "KB11": {"traces": "KB11/KB11_traces.geojson", "area": "KB11/my_area1.geojson", "name": "柯坪断隆KB11", "csv": "KB11.csv"},
     "MY": {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
 }
 
 region_key = (sys.argv[1] if len(sys.argv) > 1 else "THK").upper()
 if region_key not in REGIONS:
-    print(f"未知区域，请用: THK | KB11 | MY")
+    print(f"未知区域，请用: THK | MY")
     sys.exit(1)
 
 cfg = REGIONS[region_key]
