@@ -97,28 +97,31 @@ def run_spatial_topology_fusion_pipeline(
     if y is None:
         raise ValueError("run_spatial_topology_fusion_pipeline 需要提供有效的 target_column。")
 
+    # 网格行列数：集中计算一次，供多尺度金字塔和 build_grid_graph 共用，
+    # 避免两处独立 sqrt 因非完全平方数产生不一致的 n_rows/n_cols。
+    _n_samples = X.shape[0]
+    _grid_rows = int(np.sqrt(_n_samples)) or 1
+    _grid_cols = (_n_samples + _grid_rows - 1) // _grid_rows
+    _grid_padded = _grid_rows * _grid_cols  # build_grid_graph 使用的节点总数
+
     # 可选：多尺度空间特征金字塔
     if use_multiscale:
-        n_samples = X.shape[0]
-        n_rows = int(np.sqrt(n_samples)) or 1
-        n_cols = (n_samples + n_rows - 1) // n_rows
         # 允许网格略大于样本数（末尾不足的格子用零填充）
-        padded = n_rows * n_cols
-        if padded > n_samples:
-            X_pad = np.zeros((padded, X.shape[1]), dtype=X.dtype)
-            X_pad[:n_samples] = X
+        if _grid_padded > _n_samples:
+            X_pad = np.zeros((_grid_padded, X.shape[1]), dtype=X.dtype)
+            X_pad[:_n_samples] = X
         else:
             X_pad = X
         try:
             X_ms, suffixes = build_multiscale_pyramid(
                 X_pad,
-                n_rows=n_rows,
-                n_cols=n_cols,
+                n_rows=_grid_rows,
+                n_cols=_grid_cols,
                 scales=fusion_cfg.get("multiscale_scales", [1, 2, 4]),
                 mode=fusion_cfg.get("multiscale_mode", "mean"),
             )
             # 还原到实际样本数
-            X_ms = X_ms[:n_samples]
+            X_ms = X_ms[:_n_samples]
             new_feature_names = []
             for suf in suffixes:
                 new_feature_names.extend([f"{fn}_{suf}" for fn in feature_names])
@@ -157,9 +160,10 @@ def run_spatial_topology_fusion_pipeline(
         df["fusion_adaptive_score"] = adaptive_scores
 
     # 3. GAT 图模型融合（可选）
+    # 使用与多尺度金字塔完全一致的 n_rows/n_cols 构建网格图，确保图拓扑与空间结构对应。
     gat_scores = None
     gat_metrics: Dict[str, Any] = {}
-    edge_index, _ = build_grid_graph(n_nodes=X.shape[0])
+    edge_index, _ = build_grid_graph(n_rows=_grid_rows, n_cols=_grid_cols)
     if use_gat:
         try:
             gat_scores, _, gat_metrics = gat_fusion(
