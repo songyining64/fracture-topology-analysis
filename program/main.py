@@ -188,6 +188,31 @@ def try_network(*args, **kwargs):
         return None, str(e)
 
 
+def _style_ternary_plot(fig, tax):
+    """去掉 python-ternary 默认灰色三角底色，并加深图中的虚线（理论曲线等）。"""
+    try:
+        tax.set_background_color(color="white", alpha=1.0, zorder=-1000)
+    except Exception:
+        pass
+
+    def _line_is_dashed(line):
+        ls = line.get_linestyle()
+        if ls == "--":
+            return True
+        if isinstance(ls, tuple) and len(ls) >= 2:
+            return True
+        return False
+
+    for ax in fig.axes:
+        for line in ax.get_lines():
+            if not _line_is_dashed(line):
+                continue
+            line.set_color("#1a1a1a")
+            line.set_alpha(min(1.0, max(line.get_alpha() or 0.6, 0.6) + 0.32))
+            lw = line.get_linewidth()
+            line.set_linewidth(max(lw * 1.65, 1.2))
+
+
 # 启动时加载第一个可用的数据源（见 load_first_available_data_source）
 START_DATA_SOURCE_INDEX = load_first_available_data_source()
 
@@ -711,11 +736,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         fig, ax = plt.subplots(1, 1, figsize=(9, 9 * rate))
         traces.plot(ax=ax, color="blue")
-        area.boundary.plot(ax=ax, color="red")
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
         ax.set_aspect('equal')
+        for s in ax.spines.values():
+            s.set_color("#0d0d0d")
+            s.set_linewidth(1.35)
         self.embed_figure(fig)
 
     def run_fenleihou(self):
@@ -735,7 +762,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
         network.branch_gdf.plot(colors=[assign_colors(bt) for bt in network.branch_types], ax=ax)
-        area.boundary.plot(ax=ax, color="red")
         handles = [
             plt.Line2D([0], [0], color="green", lw=2, label="CC_branch / X_node"),
             plt.Line2D([0], [0], color="blue", lw=2, label="CI_branch / Y_node"),
@@ -746,6 +772,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
         ax.set_aspect('equal')
+        for s in ax.spines.values():
+            s.set_color("#0d0d0d")
+            s.set_linewidth(1.35)
         self.embed_figure(fig)
 
     def run_tuopuhou1(self):
@@ -851,6 +880,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.text_browser.moveCursor(QTextCursor.End)
 
     def run_azimuth(self):
+        setup_matplotlib_chinese()
         network, nw_err = try_network(
             name=name,
             trace_gdf=traces,
@@ -873,10 +903,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for azimuth_set, set_range, color in zip(network.azimuth_set_names, network.azimuth_set_ranges, colors):
             trace_gdf_set = network.trace_gdf.loc[network.trace_gdf["azimuth_set"] == azimuth_set]
             trace_gdf_set.plot(color=color, label=f"{azimuth_set} - {set_range}", ax=ax)
+        zh_fonts = plt.rcParams.get("font.sans-serif", [])
+        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+        ax.set_title(f"方位角集图 - {name}", fontsize=14, fontfamily=font_family)
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
-        area.boundary.plot(ax=ax, color="red")
         ax.set_aspect('equal')
+        for s in ax.spines.values():
+            s.set_color("#0d0d0d")
+            s.set_linewidth(1.35)
         plt.legend()
         self.embed_figure(fig)
 
@@ -893,10 +928,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         scatter = ax.scatter(x, y, c=kde_values, cmap="Reds", s=10, alpha=0.5)
         plt.title("Fracture density heatmap " + name)
         plt.axis("equal")
-        area.boundary.plot(ax=ax, color="red")
         ax.set_aspect('equal')
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
+        for s in ax.spines.values():
+            s.set_color("#0d0d0d")
+            s.set_linewidth(1.35)
         self.embed_figure(fig)
 
     def a(self):
@@ -1032,13 +1069,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         fig1.set_size_inches(9, 9)
         # fractopo 的三元图顶点标签和边角文字容易贴近画布边缘，统一向内收缩显示区域
         ax1.set_position([0.18, 0.16, 0.64, 0.64])
-        fig1.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.90)
+        fig1.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.84)
 
         fig2, ax2, tax2 = network.plot_branch()
         ax2.axis('off')
         fig2.set_size_inches(9, 9)
         ax2.set_position([0.18, 0.16, 0.64, 0.64])
-        fig2.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.90)
+        fig2.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.84)
+
+        _style_ternary_plot(fig1, tax1)
+        _style_ternary_plot(fig2, tax2)
 
         # 三元图统计框样式优化：去掉底色并增大内边距
         for fig in (fig1, fig2):
@@ -1052,6 +1092,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             alpha=1.0,
                         )
                     )
+
+        # 顶部中文标题 + 图例中数据源名称（fractopo 默认 DejaVu Sans 会导致中文成方框）
+        zh_fonts = plt.rcParams.get("font.sans-serif", [])
+        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+        for fig, ttl in (
+            (fig1, f"节点类型三元图（XYI）- {name}"),
+            (fig2, f"分支类型三元图（CC/CI/II）- {name}"),
+        ):
+            fig.suptitle(ttl, fontsize=14, fontfamily=font_family, y=0.98)
+            for ax in fig.axes:
+                leg = ax.get_legend()
+                if leg is not None:
+                    for t in leg.get_texts():
+                        t.set_fontfamily(font_family)
+                    title = leg.get_title()
+                    if title is not None:
+                        title.set_fontfamily(font_family)
+            for leg in getattr(fig, "legends", []):
+                for t in leg.get_texts():
+                    t.set_fontfamily(font_family)
 
         self.embed_figure([fig1, fig2])
 
@@ -1115,7 +1175,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def b(self):
         branches, nodes = branches_and_nodes(traces, area, snap_threshold=0.001)
-        fig, axes = plt.subplots(1, 2, figsize=(9, 9 * rate))
+        fig, axes = plt.subplots(2, 1, figsize=(9, 9 * rate * 2))
         traces.plot(ax=axes[0], color="blue", label="Traces")
         area.boundary.plot(ax=axes[0], color="black", label="Target Area", linestyle="dashed")
         axes[0].set_title("Traces & Target Area")
@@ -1149,7 +1209,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             for handle in legend.legend_handles:
                 if hasattr(handle, "_sizes"):
                     handle._sizes = [20]
-        fig.subplots_adjust(right=0.82, wspace=0.25)
+        fig.subplots_adjust(right=0.85, hspace=0.22)
         self.embed_figure(fig)
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):
