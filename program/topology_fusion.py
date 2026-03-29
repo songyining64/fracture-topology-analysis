@@ -40,12 +40,13 @@ def load_and_prepare(
     available = [c for c in feature_columns if c in df.columns]
     if not available:
         raise ValueError(f"CSV 中未找到任何特征列，请检查列名: {feature_columns}")
-    X = df[available].copy()
-    X = X.fillna(0.0)
+    X_raw = df[available].copy()
     if drop_all_nan:
-        valid = (X != 0).any(axis=1)
-        X = X.loc[valid]
+        all_nan_mask = X_raw.isna().all(axis=1)
+        valid = ~all_nan_mask
+        X_raw = X_raw.loc[valid]
         df = df.loc[valid].copy()
+    X = X_raw.fillna(0.0)
     return df, X.values.astype(np.float64), available
 
 

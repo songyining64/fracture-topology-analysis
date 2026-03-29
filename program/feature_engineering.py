@@ -60,9 +60,9 @@ def handle_outliers(
     if method == "zscore":
         mean, std = X.mean(axis=0), X.std(axis=0)
         std[std < 1e-10] = 1e-10
-        z = np.abs((X - mean) / std)
-        cap = np.minimum(np.maximum(X, mean - z_threshold * std), mean + z_threshold * std)
-        X = np.where(z > z_threshold, cap, X)
+        low = mean - z_threshold * std
+        high = mean + z_threshold * std
+        X = np.clip(X, low, high)
     else:
         q1 = np.percentile(X, 25, axis=0)
         q3 = np.percentile(X, 75, axis=0)
@@ -103,7 +103,7 @@ def select_features(
     # 互信息选 TopK（top_idx 为方差筛选后的局部列索引）
     mi = mutual_info_regression(X_var, y, random_state=random_state)
     top_k = min(n_select_mi, len(kept))
-    top_idx = np.argsort(mi)[-top_k:]
+    top_idx = np.argsort(mi)[::-1][:top_k]
     X_mi = X_var[:, top_idx]
     kept_mi = [kept[i] for i in top_idx]
     names_mi = [names_var[i] for i in top_idx] if names_var else None
