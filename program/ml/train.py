@@ -43,7 +43,7 @@ def train_xgboost_regression(
         model.fit(Xt, yt)
         pred = model.predict(Xv)
         cv_metrics.append(regression_metrics(yv, pred))
-    # 全量训练集训练最终模型
+    # 用划分出的训练集（全量数据的 1-test_size 部分）训练最终模型，测试集仅用于评估，不参与训练
     model = xgb.XGBRegressor(random_state=random_state, **xgb_params)
     model.fit(X_train, y_train)
     test_pred = model.predict(X_test)
@@ -88,6 +88,7 @@ def train_xgboost_classification(
         model.fit(Xt, yt)
         pred = model.predict(Xv)
         cv_metrics.append(classification_metrics(yv, pred))
+    # 用划分出的训练集（全量数据的 1-test_size 部分）训练最终模型，测试集仅用于评估，不参与训练
     model = xgb.XGBClassifier(random_state=random_state, **xgb_params)
     model.fit(X_train, y_train)
     test_pred = model.predict(X_test)
