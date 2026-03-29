@@ -29,21 +29,15 @@ if sys.platform == "darwin":
             os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugin_path
             break
 
-# 确保 matplotlib 缓存目录可写（必须在 import matplotlib 之前），
-# 修复 macOS 上 ~/.matplotlib 因 com.apple.provenance 扩展属性导致不可写，
-# 进而每次重建临时缓存、字体扫描极慢、中文无法显示的问题。
+# 确保 matplotlib 缓存目录可写（必须在 import matplotlib 之前）。
+# macOS 上 ~/.matplotlib 因 com.apple.provenance 扩展属性可能不可写，
+# 导致每次启动重建临时缓存、字体扫描极慢、中文显示为方框。
+# 优先用项目内 .cache/mplconfig（项目目录本身始终可写），
+# 这样字体缓存持久保存在项目里，第二次启动直接命中缓存，中文字体即可正常显示。
 if "MPLCONFIGDIR" not in os.environ:
-    _mpl_default = os.path.join(os.path.expanduser("~"), ".matplotlib")
-    _mpl_test = os.path.join(_mpl_default, ".write_test")
-    try:
-        os.makedirs(_mpl_default, exist_ok=True)
-        with open(_mpl_test, "w") as _f:
-            _f.write("ok")
-        os.remove(_mpl_test)
-    except OSError:
-        _mpl_fallback = os.path.join(os.path.expanduser("~"), ".cache", "matplotlib_fracture")
-        os.makedirs(_mpl_fallback, exist_ok=True)
-        os.environ["MPLCONFIGDIR"] = _mpl_fallback
+    _mpl_project_cache = os.path.join(_PROGRAM_DIR, ".cache", "mplconfig")
+    os.makedirs(_mpl_project_cache, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = _mpl_project_cache
 
 import matplotlib
 

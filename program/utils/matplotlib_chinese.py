@@ -9,25 +9,55 @@ import sys
 
 def _ensure_mpl_cache_dir() -> None:
     """
-    确保 matplotlib 缓存目录可写。
-    若默认的 ~/.matplotlib 不可写（常见于 macOS com.apple.provenance 锁定），
-    自动回退到 ~/.cache/matplotlib_fracture，并设置 MPLCONFIGDIR 环境变量。
-    必须在 import matplotlib 之前调用，否则 matplotlib 已经选定了缓存目录。
+    确保 matplotlib 缓存目录可写，必须在 import matplotlib 之前调用。
+    macOS 上 ~/.matplotlib 因 com.apple.provenance 扩展属性可能不可写，
+    导致每次启动重建临时缓存、字体扫描极慢。
+    此函数自动回退到 ~/.cache/matplotlib_fracture（始终可写），
+    使字体缓存持久化，第二次及以后启动直接命中缓存。
+    注意：main.py 已在更早的时机设置了 MPLCONFIGDIR，此处主要服务于独立脚本。
     """
     if "MPLCONFIGDIR" in os.environ:
         return
-    default_dir = os.path.join(os.path.expanduser("~"), ".matplotlib")
-    # 用写文件测试真正的可写性（仅靠 os.access 在某些 macOS 版本上不可靠）
-    test_file = os.path.join(default_dir, ".write_test")
+    fallback = os.path.join(os.path.expanduser("~"), ".cache", "matplotlib_fracture")
     try:
-        os.makedirs(default_dir, exist_ok=True)
-        with open(test_file, "w") as f:
-            f.write("ok")
-        os.remove(test_file)
-    except OSError:
-        fallback = os.path.join(os.path.expanduser("~"), ".cache", "matplotlib_fracture")
         os.makedirs(fallback, exist_ok=True)
         os.environ["MPLCONFIGDIR"] = fallback
+    except OSError:
+        pass
+
+
+# macOS 上直接注册的字体文件路径（按优先级排列）
+_MACOS_FONT_FILES = [
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/simsun.ttc",
+]
+
+
+def _register_fonts_by_path(font_files: list) -> list:
+    """
+    直接用字体文件路径注册到 matplotlib，返回成功注册的字体名列表。
+    此方法绕过字体缓存扫描，无论缓存目录是否可写都能立即生效。
+    """
+    import matplotlib.font_manager as fm
+
+    registered = []
+    for path in font_files:
+        if not os.path.isfile(path):
+            continue
+        try:
+            fm.fontManager.addfont(path)
+            # addfont 后该文件对应的字体条目已加入 fontManager.ttflist
+            # 取刚加入的最后一条记录的 name
+            prop = fm.FontProperties(fname=path)
+            name = prop.get_name()
+            if name and name not in registered:
+                registered.append(name)
+        except Exception:
+            pass
+    return registered
 
 
 def setup_matplotlib_chinese():
@@ -40,33 +70,19 @@ def setup_matplotlib_chinese():
     import matplotlib
     import matplotlib.pyplot as plt
 
-    # 按系统选择中文字体优先级（matplotlib 会使用第一个可用的）
     if sys.platform == "darwin":
-        fonts = [
-            "PingFang SC",
-            "Heiti SC",
-            "STHeiti",
-            "Songti SC",
-            "Arial Unicode MS",
-            "Microsoft YaHei",
-            "SimHei",
-        ]
+        # 直接注册字体文件，不依赖缓存扫描
+        registered = _register_fonts_by_path(_MACOS_FONT_FILES)
+        # 已注册的字体名放最前，其余备用名兜底
+        fallback = ["PingFang SC", "Heiti SC", "STHeiti", "Songti SC",
+                    "Arial Unicode MS", "Microsoft YaHei", "SimHei"]
+        fonts = registered + [f for f in fallback if f not in registered]
     elif sys.platform == "win32":
-        fonts = [
-            "Microsoft YaHei",
-            "SimHei",
-            "KaiTi",
-            "Arial Unicode MS",
-        ]
+        fonts = ["Microsoft YaHei", "SimHei", "KaiTi", "Arial Unicode MS"]
     else:
-        fonts = [
-            "WenQuanYi Micro Hei",
-            "WenQuanYi Zen Hei",
-            "Noto Sans CJK SC",
-            "Droid Sans Fallback",
-            "Microsoft YaHei",
-            "SimHei",
-        ]
+        fonts = ["WenQuanYi Micro Hei", "WenQuanYi Zen Hei",
+                 "Noto Sans CJK SC", "Droid Sans Fallback",
+                 "Microsoft YaHei", "SimHei"]
 
     plt.rcParams["font.sans-serif"] = fonts
     plt.rcParams["axes.unicode_minus"] = False
