@@ -117,12 +117,26 @@ class Ui_MainWindow(object):
         self.btn_guoji_weighted = QtWidgets.QPushButton("高价值属性加权融合")
         self.btn_guoji_compare = QtWidgets.QPushButton("融合对比(加权vsGAT)")
         self.btn_guoji_train = QtWidgets.QPushButton("训练XGBoost模型")
+        self.lbl_shap_features = QtWidgets.QLabel("SHAP关注特征:")
+        self.combo_shap_features = QtWidgets.QComboBox()
+        self.combo_shap_features.setMinimumWidth(220)
+        self.combo_shap_features.setToolTip(
+            "列出当前数据源网格CSV经特征筛选后、实际进入XGBoost的属性。\n"
+            "选「全部」时摘要图按 SHAP 默认顺序；选某一列时该特征在图中排在最前便于查看。\n（需先训练模型再点 SHAP。）"
+        )
+        self.combo_shap_features.addItem("全部（默认顺序）")
         self.btn_guoji_shap = QtWidgets.QPushButton("SHAP可解释分析")
         self.btn_spatial = QtWidgets.QPushButton("一键空间-拓扑融合")
 
         self.combo_fusion.setStyleSheet(_combo_style)
+        self.combo_shap_features.setStyleSheet(_combo_style)
         for widget in [self.combo_fusion, self.btn_ronghe, self.btn_guoji_weighted, self.btn_guoji_compare,
-                       self.btn_guoji_train, self.btn_guoji_shap, self.btn_spatial]:
+                       self.btn_guoji_train]:
+            widget.setMinimumHeight(35)
+            self.row3_layout.addWidget(widget)
+        self.row3_layout.addWidget(self.lbl_shap_features)
+        self.row3_layout.addWidget(self.combo_shap_features)
+        for widget in [self.btn_guoji_shap, self.btn_spatial]:
             widget.setMinimumHeight(35)
             self.row3_layout.addWidget(widget)
         self.top_layout.addLayout(self.row3_layout)

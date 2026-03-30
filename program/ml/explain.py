@@ -6,7 +6,7 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 _PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROGRAM_DIR not in sys.path:
@@ -17,12 +17,37 @@ from utils.matplotlib_chinese import setup_matplotlib_chinese
 setup_matplotlib_chinese()
 
 
+def _reorder_by_emphasis(
+    shap_values: np.ndarray,
+    X: np.ndarray,
+    feature_names: List[str],
+    emphasize_first: Optional[List[str]],
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """把 emphasize_first 中出现的特征列排到最前，便于 summary 图优先展示。"""
+    if not emphasize_first:
+        return shap_values, X, feature_names
+    fn = list(feature_names)
+    order: List[int] = []
+    for name in emphasize_first:
+        if name in fn:
+            i = fn.index(name)
+            if i not in order:
+                order.append(i)
+    for i in range(len(fn)):
+        if i not in order:
+            order.append(i)
+    shap_values = shap_values[:, order]
+    X = X[:, order]
+    return shap_values, X, [fn[i] for i in order]
+
+
 def shap_feature_importance(
     model,
     X: np.ndarray,
     feature_names: Optional[List[str]] = None,
     is_tree: bool = True,
     out_plot_path: Optional[str] = None,
+    emphasize_first: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
     计算 SHAP 特征重要性，返回每特征 mean(|SHAP|) 及占比。
@@ -42,6 +67,9 @@ def shap_feature_importance(
         shap_values = explainer.shap_values(X)
     if isinstance(shap_values, list):
         shap_values = shap_values[0]
+    shap_values, X, feature_names = _reorder_by_emphasis(
+        shap_values, X, list(feature_names), emphasize_first
+    )
     importance = np.abs(shap_values).mean(axis=0)
     total = importance.sum()
     pct = (importance / total * 100) if total > 0 else np.zeros_like(importance)
@@ -52,8 +80,13 @@ def shap_feature_importance(
     }).sort_values("importance", ascending=False)
     if out_plot_path:
         os.makedirs(os.path.dirname(out_plot_path) or ".", exist_ok=True)
-        shap.summary_plot(shap_values, X, feature_names=feature_names, show=False)
         import matplotlib.pyplot as plt
+        try:
+            shap.summary_plot(
+                shap_values, X, feature_names=feature_names, show=False, sort=False
+            )
+        except TypeError:
+            shap.summary_plot(shap_values, X, feature_names=feature_names, show=False)
         plt.savefig(out_plot_path, bbox_inches="tight", dpi=150)
         plt.close()
     return df
@@ -101,6 +134,7 @@ def explain_xgboost(
     is_classifier: bool = False,
     feature_columns: Optional[List[str]] = None,
     out_dir: Optional[str] = None,
+    emphasize_first: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """加载 XGBoost 模型与数据，输出 SHAP 特征重要性表与可选图。"""
     try:
@@ -112,7 +146,14 @@ def explain_xgboost(
     r = build_feature_matrix(csv_path, feature_columns=feature_columns, out_processed_dir=None)
     X, names = r["X"], r["feature_names"]
     out_plot = os.path.join(out_dir, "shap_summary.png") if out_dir else None
-    df_imp = shap_feature_importance(model, X, feature_names=names, is_tree=True, out_plot_path=out_plot)
+    df_imp = shap_feature_importance(
+        model,
+        X,
+        feature_names=names,
+        is_tree=True,
+        out_plot_path=out_plot,
+        emphasize_first=emphasize_first,
+    )
     return df_imp
 
 

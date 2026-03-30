@@ -45,8 +45,10 @@ matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
+from matplotlib import ticker
 
 from utils.matplotlib_chinese import setup_matplotlib_chinese
+from utils.crs_metric import unify_traces_area_crs, reproject_to_metric_crs
 
 setup_matplotlib_chinese()
 
@@ -113,24 +115,6 @@ down = 0.0
 up = 0.0
 
 
-def unify_traces_area_crs(traces: gpd.GeoDataFrame, area: gpd.GeoDataFrame):
-    """
-    将迹线与研究区对齐到同一 CRS。
-    fractopo 在 crop 前不会把两套不同 CRS 自动变换到同一空间，易导致裁剪为空。
-    """
-    from pyproj import CRS
-
-    tc, ac = traces.crs, area.crs
-    if tc is not None and ac is not None:
-        if not CRS.from_user_input(tc).equals(CRS.from_user_input(ac)):
-            traces = traces.to_crs(ac)
-    elif ac is not None and tc is None:
-        traces = traces.set_crs(ac)
-    elif tc is not None and ac is None:
-        area = area.set_crs(tc)
-    return traces, area
-
-
 def load_data_source(index: int):
     """按索引加载数据源，更新全局 traces/area/name/rate/width/height/left/right/down/up。"""
     global traces, area, name, rate, width, height, left, right, down, up
@@ -145,6 +129,7 @@ def load_data_source(index: int):
     traces = gpd.read_file(trace_path)
     area = gpd.read_file(area_path)
     traces, area = unify_traces_area_crs(traces, area)
+    traces, area = reproject_to_metric_crs(traces, area)
     name = cfg["name"]
     traces.drop_duplicates(subset="geometry", inplace=True)
     traces.reset_index(drop=True, inplace=True)
@@ -220,6 +205,47 @@ def _style_ternary_plot(fig, tax):
             line.set_alpha(min(1.0, max(line.get_alpha() or 0.6, 0.6) + 0.32))
             lw = line.get_linewidth()
             line.set_linewidth(max(lw * 1.65, 1.2))
+
+
+def _polish_fractopo_ternary_labels(fig):
+    """
+    fractopo 在 X/Y/I 顶点使用白字+粗描边；若再统一套 bbox 会像乱码方框且易被裁切。
+    统计信息（多行）单独用圆角白底框；$C_B$ 阈值线用 DejaVu 避免数学符号缺字。
+    """
+    corners = frozenset({"X", "Y", "I", "I-C", "C-C", "I-I"})
+    for ax in fig.axes:
+        for txt in ax.texts:
+            raw = txt.get_text().strip()
+            compact = raw.replace(" ", "").replace("–", "-").replace("—", "-")
+            if compact in corners:
+                txt.set_bbox(None)
+                try:
+                    txt.set_path_effects([])
+                except Exception:
+                    pass
+                txt.set_color("#111111")
+                txt.set_fontfamily("DejaVu Sans")
+                txt.set_fontweight("bold")
+                txt.set_fontsize(19)
+            elif raw.startswith("$"):
+                txt.set_fontfamily("DejaVu Sans")
+                txt.set_color("#1a1a1a")
+                try:
+                    txt.set_path_effects([])
+                except Exception:
+                    pass
+            elif "\n" in raw:
+                txt.set_bbox(
+                    dict(
+                        boxstyle="round,pad=0.5",
+                        facecolor="white",
+                        edgecolor="#9CA3AF",
+                        alpha=0.95,
+                    )
+                )
+                zh_fonts = plt.rcParams.get("font.sans-serif", [])
+                if isinstance(zh_fonts, (list, tuple)) and zh_fonts:
+                    txt.set_fontfamily(zh_fonts[0])
 
 
 # 启动时加载第一个可用的数据源（见 load_first_available_data_source）
@@ -301,6 +327,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # 1.6 绑定数据源切换
         self.combo_data_source.currentIndexChanged.connect(self._on_data_source_changed)
+        self._refresh_shap_feature_combo()
 
         # 2. 绑定第一排：基础地质与拓扑绘图
         self.btn_yuantu.clicked.connect(self.run_yuantu)
@@ -459,9 +486,32 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         """数据源切换时重新加载迹线与研究区。"""
         if load_data_source(index):
             print(f"已切换数据源：{name}")
+            self._refresh_shap_feature_combo()
         else:
             QMessageBox.warning(self, "加载失败",
                                 f"无法加载选中的数据源，请确认 {DATA_SOURCES[index]['traces']} 和 {DATA_SOURCES[index]['area']} 存在。")
+
+    def _refresh_shap_feature_combo(self):
+        """用当前数据源网格 CSV 刷新 SHAP 特征下拉列表（与训练时 feature_engineering 列一致）。"""
+        idx = self.combo_data_source.currentIndex()
+        if 0 <= idx < len(DATA_SOURCES):
+            csv_name = DATA_SOURCES[idx]["csv"]
+        else:
+            csv_name = "Yingmai 2 area in Tarim Basin.csv"
+        csv_path = os.path.join(_PROGRAM_DIR, csv_name)
+        self.combo_shap_features.blockSignals(True)
+        self.combo_shap_features.clear()
+        self.combo_shap_features.addItem("全部（默认顺序）")
+        if os.path.isfile(csv_path):
+            try:
+                from feature_engineering import build_feature_matrix
+
+                r = build_feature_matrix(csv_path, out_processed_dir=None)
+                for fname in r["feature_names"]:
+                    self.combo_shap_features.addItem(fname)
+            except Exception:
+                pass
+        self.combo_shap_features.blockSignals(False)
 
     def run_guoji_weighted_fusion(self):
         try:
@@ -481,6 +531,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             txt = "【加权融合结果】\n\n"
             txt += f"样本数：{len(df)}\n"
             txt += f"融合得分 均值：{mean_s:.4f}  标准差：{std_s:.4f}\n"
+            n_at_min = int((df["weighted_fusion_score"] == 0).sum())
+            txt += (
+                f"\n说明：得分已按全工区 min-max 归一到 [0,1]，最低一档均为 0；"
+                f"当前并列最低的网格数：{n_at_min}（多为无断裂或拓扑特征最弱的格子）。\n"
+            )
             txt += "\n前 5 行得分：\n" + df["weighted_fusion_score"].head().to_string()
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
@@ -617,9 +672,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         warnings.filterwarnings("ignore")
 
         try:
-            df_imp = explain_xgboost(model_path, csv_path, out_dir=out_dir)
+            emph = None
+            if self.combo_shap_features.currentIndex() > 0:
+                emph = [self.combo_shap_features.currentText().strip()]
+            df_imp = explain_xgboost(
+                model_path, csv_path, out_dir=out_dir, emphasize_first=emph
+            )
 
             txt = "【XGBoost SHAP 特征贡献分析】\n\n"
+            if emph:
+                txt += f"关注特征（图中置顶）：{emph[0]}\n\n"
             txt += df_imp.head(10).to_string()
             txt += f"\n\n（summary 图已保存至 {out_dir}/shap_summary.png）"
 
@@ -1075,32 +1137,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         fig1, ax1, tax1 = network.plot_xyi()
         ax1.axis('off')
-        fig1.set_size_inches(9, 9)
-        # fractopo 的三元图顶点标签和边角文字容易贴近画布边缘，统一向内收缩显示区域
-        ax1.set_position([0.18, 0.16, 0.64, 0.64])
-        fig1.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.84)
+        fig1.set_size_inches(10, 10)
+        # 三角与顶点标签留出边距，避免 X/Y/I 贴边被裁切
+        ax1.set_position([0.13, 0.13, 0.62, 0.58])
+        fig1.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
 
         fig2, ax2, tax2 = network.plot_branch()
         ax2.axis('off')
-        fig2.set_size_inches(9, 9)
-        ax2.set_position([0.18, 0.16, 0.64, 0.64])
-        fig2.subplots_adjust(left=0.12, right=0.90, bottom=0.12, top=0.84)
+        fig2.set_size_inches(10, 10)
+        ax2.set_position([0.13, 0.13, 0.62, 0.58])
+        fig2.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
 
         _style_ternary_plot(fig1, tax1)
         _style_ternary_plot(fig2, tax2)
-
-        # 三元图统计框样式优化：去掉底色并增大内边距
-        for fig in (fig1, fig2):
-            for one_ax in fig.axes:
-                for txt in one_ax.texts:
-                    txt.set_bbox(
-                        dict(
-                            boxstyle="square,pad=0.75",
-                            facecolor="none",
-                            edgecolor="#9CA3AF",
-                            alpha=1.0,
-                        )
-                    )
+        _polish_fractopo_ternary_labels(fig1)
+        _polish_fractopo_ternary_labels(fig2)
 
         # 顶部中文标题 + 图例中数据源名称（fractopo 默认 DejaVu Sans 会导致中文成方框）
         zh_fonts = plt.rcParams.get("font.sans-serif", [])
@@ -1109,7 +1160,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             (fig1, f"节点类型三元图（XYI）- {name}"),
             (fig2, f"分支类型三元图（CC/CI/II）- {name}"),
         ):
-            fig.suptitle(ttl, fontsize=14, fontfamily=font_family, y=0.98)
+            fig.suptitle(ttl, fontsize=14, fontfamily=font_family, y=0.96)
             for ax in fig.axes:
                 leg = ax.get_legend()
                 if leg is not None:
@@ -1160,10 +1211,28 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             handle.set_facecolor(color)
                         if hasattr(handle, "set_edgecolor"):
                             handle.set_edgecolor("black")
-                # 弱化 fractopo 默认黄底注释框，避免视觉干扰与裁切
+                    leg_txts = legend.get_texts()
+                    if leg_txts:
+                        ax.set_title(
+                            leg_txts[0].get_text(),
+                            fontsize=11,
+                            fontweight="bold",
+                            pad=14,
+                            fontfamily="DejaVu Sans",
+                        )
+                    legend.set_loc("upper left")
+                # 仅给右侧「trace count」侧栏加框，避免整块轴域文字误加框导致拥挤
                 for txt in ax.texts:
-                    txt.set_bbox(dict(boxstyle="square", facecolor="white", edgecolor="#9CA3AF", alpha=0.9, pad=0.35))
-                    txt.set_clip_on(False)
+                    if "trace count" in txt.get_text():
+                        txt.set_bbox(
+                            dict(
+                                boxstyle="round,pad=0.35",
+                                facecolor="white",
+                                edgecolor="#9CA3AF",
+                                alpha=0.95,
+                            )
+                        )
+                        txt.set_clip_on(False)
         for fig in figs:
             # 标题显示当前数据源名称，并在柱形图上端居中
             if hasattr(fig, "_suptitle") and fig._suptitle is not None:
@@ -1172,34 +1241,54 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 zh_fonts = plt.rcParams.get("font.sans-serif", [])
                 if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0:
                     fig._suptitle.set_fontfamily(zh_fonts[0])
-                fig._suptitle.set_bbox(dict(boxstyle="square", facecolor="white", edgecolor="#9CA3AF", alpha=0.9))
+                fig._suptitle.set_fontsize(15)
+                fig._suptitle.set_bbox(
+                    dict(boxstyle="round,pad=0.45", facecolor="white", edgecolor="#9CA3AF", alpha=0.95)
+                )
                 fig._suptitle.set_x(0.5)
-                fig._suptitle.set_y(0.98)
+                fig._suptitle.set_y(0.96)
                 fig._suptitle.set_ha("center")
-            fig.subplots_adjust(top=0.86, right=0.88, wspace=0.35)
-            fig.set_size_inches(15, 7)
+                fig._suptitle.set_va("top")
+            fig.subplots_adjust(left=0.07, right=0.78, top=0.82, bottom=0.14, wspace=0.34)
+            fig.set_size_inches(15, 7.8)
 
         if figs:
             self.embed_figure(figs)
 
     def b(self):
         branches, nodes = branches_and_nodes(traces, area, snap_threshold=0.001)
-        fig, axes = plt.subplots(2, 1, figsize=(9, 9 * rate * 2))
-        traces.plot(ax=axes[0], color="blue", label="Traces")
-        area.boundary.plot(ax=axes[0], color="black", label="Target Area", linestyle="dashed")
-        axes[0].set_title("Traces & Target Area")
-        nodes.plot(ax=axes[1], column="Class", zorder=10, legend=False, categorical=True, markersize=7)
-        axes[1].set_title("Branches & Nodes & Area")
-        area.boundary.plot(ax=axes[1], color="black", linestyle="dashed")
-        axes[1].set_xlim(*axes[0].get_xlim())
-        axes[1].set_ylim(*axes[0].get_ylim())
-        for ax in axes:
+        # 左右并排，避免上下叠图时标题与坐标轴标签互相遮挡
+        h_in = max(7.5, 8.0 * float(rate))
+        fig, axes = plt.subplots(1, 2, figsize=(17, h_in), sharex=True, sharey=True)
+        ax0, ax1 = axes[0], axes[1]
+        traces.plot(ax=ax0, color="blue", label="Traces")
+        area.boundary.plot(ax=ax0, color="black", label="Target Area", linestyle="dashed")
+        ax0.set_title("Traces & Target Area", fontsize=12, pad=12)
+        nodes.plot(ax=ax1, column="Class", zorder=10, legend=False, categorical=True, markersize=7)
+        ax1.set_title("Branches & Nodes & Area", fontsize=12, pad=12)
+        area.boundary.plot(ax=ax1, color="black", linestyle="dashed")
+        for ax in (ax0, ax1):
             ax.set_xlim(left - width, right + width)
             ax.set_ylim(down - height, up + height)
             area.boundary.plot(ax=ax, color="red")
-            ax.set_aspect('equal')
+            ax.set_aspect("equal")
+            xa0, xa1 = ax.get_xlim()
+            ya0, ya1 = ax.get_ylim()
+            mx = max(abs(xa0), abs(xa1), abs(ya0), abs(ya1))
+            if mx >= 1e5:
+                ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v / 1e6:.2f}"))
+                ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v / 1e6:.2f}"))
+                ax.set_xlabel("Easting (×10⁶ m)")
+                if ax is ax0:
+                    ax.set_ylabel("Northing (×10⁶ m)")
+            else:
+                ax.xaxis.set_major_formatter(ticker.ScalarFormatter(useOffset=False))
+                ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useOffset=False))
+                ax.set_xlabel("X")
+                if ax is ax0:
+                    ax.set_ylabel("Y")
+            ax.tick_params(axis="both", labelsize=9)
 
-        # 手动构建图例，避免自动图例标题乱码/方框字与裁切问题
         class_order = [c for c in ("X", "Y", "I", "E") if c in nodes["Class"].dropna().unique()]
         if class_order:
             cmap = plt.get_cmap("tab10")
@@ -1208,17 +1297,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                        markerfacecolor=cmap(i), markeredgecolor="black", label=cls)
                 for i, cls in enumerate(class_order)
             ]
-            legend = axes[1].legend(
+            legend = ax1.legend(
                 handles=handles,
                 title="Node Type",
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
                 frameon=True,
             )
-            for handle in legend.legend_handles:
+            leg_handles = getattr(legend, "legend_handles", None) or getattr(legend, "legendHandles", [])
+            for handle in leg_handles:
                 if hasattr(handle, "_sizes"):
                     handle._sizes = [20]
-        fig.subplots_adjust(right=0.85, hspace=0.22)
+        fig.subplots_adjust(left=0.07, right=0.88, top=0.90, bottom=0.14, wspace=0.18)
         self.embed_figure(fig)
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):

@@ -4,9 +4,16 @@
 """
 import sys
 import os
+
+# 保证可从 program 目录导入 utils
+_BASE = os.path.dirname(os.path.abspath(__file__))
+if _BASE not in sys.path:
+    sys.path.insert(0, _BASE)
+
 import geopandas as gpd
 import pandas as pd
 from fractopo import Network
+from utils.crs_metric import unify_traces_area_crs, reproject_to_metric_crs
 
 # 区域配置（与 main.py DATA_SOURCES 对应）
 # THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2
@@ -21,7 +28,7 @@ if region_key not in REGIONS:
     sys.exit(1)
 
 cfg = REGIONS[region_key]
-base = os.path.dirname(os.path.abspath(__file__))
+base = _BASE
 trace_data_url = os.path.join(base, cfg["traces"])
 area_data_url = os.path.join(base, cfg["area"])
 name = cfg["name"]
@@ -34,6 +41,8 @@ if not os.path.isfile(trace_data_url) or not os.path.isfile(area_data_url):
 
 traces = gpd.read_file(trace_data_url)
 area = gpd.read_file(area_data_url)
+traces, area = unify_traces_area_crs(traces, area)
+traces, area = reproject_to_metric_crs(traces, area)
 traces.drop_duplicates(subset="geometry", inplace=True)
 traces.reset_index(drop=True, inplace=True)
 
