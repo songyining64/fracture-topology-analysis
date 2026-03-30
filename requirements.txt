@@ -1,4 +1,4 @@
-# 断裂拓扑分析项目依赖（在项目根目录执行 pip install -r requirements.txt）
+# 油气区断裂网络连通性智能分析与预测系统 — Python 依赖（项目根目录执行 pip install -r requirements.txt）
 fractopo>=0.6.0
 geopandas>=0.12.0
 PyQt5>=5.15

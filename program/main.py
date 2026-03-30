@@ -390,7 +390,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.btn_spatial.clicked.connect(self.run_spatial_topology_framework)
 
         self.opt = 0
-        print("系统初始化完成：")
+        print("油气区断裂网络连通性智能分析与预测系统 — 初始化完成")
 
 
     def append_text(self, text):

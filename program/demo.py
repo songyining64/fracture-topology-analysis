@@ -6,7 +6,7 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(1400, 900)
-        MainWindow.setWindowTitle("地质断裂拓扑智能分析系统 v1.0")
+        MainWindow.setWindowTitle("油气区断裂网络连通性智能分析与预测系统 v1.0")
         self.centralwidget = QtWidgets.QWidget(MainWindow)
 
         # 主布局 (垂直)
