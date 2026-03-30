@@ -91,7 +91,7 @@ def _check_min_data(df: pd.DataFrame, X: np.ndarray, used_cols: list, min_sample
     if n_samples < min_samples or n_features < min_features:
         raise ValueError(
             f"有效样本数或特征数不足（当前 {n_samples} 样本、{n_features} 特征）。"
-            f"融合/聚类至少需要 {min_samples} 样本和 {min_features} 特征。请换用数据量更大的区域（如英买2区、KB11）。"
+            f"融合/聚类至少需要 {min_samples} 样本和 {min_features} 特征。请检查英买 2 网格 CSV 是否齐全或重新运行 export_grid_csv.py MY。"
         )
 
 
@@ -106,7 +106,7 @@ def run_fusion_pipeline(
     if n_samples < 2 or n_features < 2:
         raise ValueError(
             f"有效样本数或特征数不足（当前 {n_samples} 样本、{n_features} 特征）。"
-            f"PCA/聚类至少需要 2 样本和 2 特征。请换用数据量更大的区域（如英买2区、KB11），或先运行 export_grid_csv.py 生成网格 CSV。"
+            f"PCA/聚类至少需要 2 样本和 2 特征。请先运行 export_grid_csv.py MY 生成英买 2 网格 CSV 并确保特征列非空。"
         )
     n_components = min(n_components, n_samples, n_features)
     X_pca, scaler, pca = fuse_with_pca(X, n_components=n_components, standardize=True)

@@ -14,7 +14,7 @@
 - **机器学习**：XGBoost 回归/分类（用于断裂强度、连通性等相关指标的估计与泛化评估）、Optuna 超参调优、SHAP 可解释性分析，使预测结果可追溯、可核对。
 - **空间-拓扑融合**：特征工程 → 加权融合 → GAT/GraphSAGE → 多尺度金字塔 → XGBoost → SHAP 的端到端流水线，实现从空间—拓扑表征到可解释预测的闭环。
 
-本系统支持准噶尔盆地车莫古隆起（THK）、柯坪断隆 KB11、塔里木盆地英买2（MY）等典型区域数据的自由切换，并支持网格化统计结果导出（CSV）用于 GIS 展示与进一步分析。
+当前默认数据为**塔里木盆地英买2（MY）**（`program/MY/` 迹线与研究区；网格 CSV 可导出用于 GIS 与进一步分析）。其他工区可在本地自行扩展 `DATA_SOURCES`，与仓库默认配置无关。
 
 ---
 ## 二、开源代码与组件使用情况说明
@@ -96,10 +96,10 @@ py program\main.py
 ```
 ### 3.4 数据准备
 
-- 迹线与研究区数据置于 `program/THK/`、`program/KB11/`、`program/MY/` 对应目录
+- 迹线与研究区数据置于 `program/MY/`（英买 2）；若扩展多工区可增设子目录并在 `DATA_SOURCES` 中配置
 - 融合/ML 需先运行网格导出生成 CSV：
   ```bash
-  python export_grid_csv.py THK   # 或 KB11、MY
+  python export_grid_csv.py MY   # 英买 2 网格 CSV（默认参数亦可省略）
   ```
 
 ---
@@ -191,7 +191,7 @@ py program\main.py
     │   ├── infer.py          # 推理
     │   └── explain.py        # SHAP 解释
     ├── utils/                # 工具模块
-    ├── THK/ KB11/ MY/        # 区域数据目录
+    ├── MY/                   # 英买 2 区域数据目录（迹线、研究区 GeoJSON）
     └── new plot/             # 栅格图分析（可选）
 ```
 

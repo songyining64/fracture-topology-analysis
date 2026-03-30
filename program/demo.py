@@ -24,14 +24,14 @@ class Ui_MainWindow(object):
         # --- 第零排：数据源切换 ---
         self.row0_layout = QtWidgets.QHBoxLayout()
         self.lbl_data_source = QtWidgets.QLabel("数据源：")
+        self.lbl_data_source.setToolTip("当前工区：加载 program/MY 下迹线与研究区 GeoJSON，作为以下所有地图与拓扑分析的底数。")
         self.combo_data_source = QtWidgets.QComboBox()
         self.combo_data_source.addItems([
-            "准噶尔盆地车莫古隆起 (THK)",
             "塔里木盆地英买2 (MY)",
         ])
         self.combo_data_source.setMinimumWidth(160)
         self.combo_data_source.setMinimumHeight(35)
-        self.combo_data_source.setToolTip("切换断裂迹线与研究区数据，融合分析将使用对应区域的网格CSV")
+        self.combo_data_source.setToolTip("当前仅配置英买 2 区：迹线/研究区为 MY 下 GeoJSON，融合分析使用对应网格 CSV")
 
         # 通用下拉框样式（确保下拉列表背景白色、文字深色，避免系统主题导致白字白底看不见）
         _combo_style = """
@@ -70,6 +70,9 @@ class Ui_MainWindow(object):
         self.combo_data_source.setStyleSheet(_combo_style_data_source)
         self.row0_layout.addWidget(self.lbl_data_source)
         self.row0_layout.addWidget(self.combo_data_source)
+        self.lbl_ui_hint = QtWidgets.QLabel("提示：悬停按钮可看功能说明；出图后右侧图下方会显示「图说明」")
+        self.lbl_ui_hint.setStyleSheet("color: #6c757d; font-size: 12px;")
+        self.row0_layout.addWidget(self.lbl_ui_hint)
         self.row0_layout.addStretch()
         self.top_layout.addLayout(self.row0_layout)
 
@@ -84,6 +87,34 @@ class Ui_MainWindow(object):
         self.btn_guanxi = QtWidgets.QPushButton("交叉与相邻关系")
         self.btn_b = QtWidgets.QPushButton("确定分支和节点")
         self.btn_a = QtWidgets.QPushButton("长度分布拟合")
+
+        self.btn_yuantu.setToolTip(
+            "【原图】在研究区范围内绘制原始断裂迹线，用于检查几何范围与坐标系是否正确。"
+        )
+        self.btn_fenleihou.setToolTip(
+            "【分类图】按 fractopo 规则对迹线做分支类型（CC/CI/II）等着色，看拓扑分类后的空间分布。"
+        )
+        self.btn_relitu.setToolTip(
+            "【密度】沿迹线采样后做核密度估计，颜色表示断裂空间集中程度（非网格属性）。"
+        )
+        self.btn_azimuth.setToolTip(
+            "【方位集】按设定的方位组（如 N-S / E-W）给迹线着色，看优势走向与分组。"
+        )
+        self.btn_meiguitu.setToolTip(
+            "【玫瑰图】迹线/分支方位角的极坐标玫瑰图，看走向集中度。"
+        )
+        self.btn_sanyuantu.setToolTip(
+            "【三元图】节点类型 X/Y/I 或分支端点组合的比例三角图，看拓扑端元结构。"
+        )
+        self.btn_guanxi.setToolTip(
+            "【关系图】方位集之间的交叉（cross-cut）与相邻（abutting）等邻接关系示意。"
+        )
+        self.btn_b.setToolTip(
+            "【分支与节点】左右两图：迹线+研究区与节点类型、分支类型对比，核实拓扑识别结果。"
+        )
+        self.btn_a.setToolTip(
+            "【长度分布】迹线与分支长度直方图 + 幂律/对数正态等拟合曲线，用于长度标度分析。"
+        )
 
         for btn in [self.btn_yuantu, self.btn_fenleihou, self.btn_relitu, self.btn_azimuth,
                     self.btn_meiguitu, self.btn_sanyuantu, self.btn_guanxi, self.btn_b, self.btn_a]:
@@ -101,6 +132,18 @@ class Ui_MainWindow(object):
                                     "Number of Traces (实际迹线数量)", "Branch Max/Min/Mean Length", "Node Count",
                                     "Branch Count"])
         self.btn_tuopushuxing = QtWidgets.QPushButton("显示拓扑属性数据")
+
+        self.combo_topo.setToolTip(
+            "【拓扑化视图】选「1」：迹线+节点（按 X/Y/I 着色）；选「2」：分支（C-C/C-I/I-I 等）+ 节点散点。\n"
+            "切换选项后会自动重绘，请稍候。"
+        )
+        self.combo_params.setToolTip(
+            "【等值线/平滑图参数】先在此处选好网格指标，再点同一排触发轮廓图流程（与程序内逻辑绑定）。\n"
+            "各项对应断裂强度、长度、无量纲强度、迹线数、分支长度等。"
+        )
+        self.btn_tuopushuxing.setToolTip(
+            "在左侧文本框列出当前网络的拓扑标量参数表（如 B21、P21、连接度等整体指标）。"
+        )
 
         self.combo_topo.setStyleSheet(_combo_style)
         self.combo_params.setStyleSheet(_combo_style)
@@ -127,6 +170,29 @@ class Ui_MainWindow(object):
         self.combo_shap_features.addItem("全部（默认顺序）")
         self.btn_guoji_shap = QtWidgets.QPushButton("SHAP可解释分析")
         self.btn_spatial = QtWidgets.QPushButton("一键空间-拓扑融合")
+
+        self.combo_fusion.setToolTip(
+            "【融合方法】将多列网格拓扑属性降维到 2 维（PCA / 自编码器 / UMAP / VAE），再做 KMeans 聚类。\n"
+            "自编码器与 VAE 需 PyTorch；UMAP 需 umap-learn。"
+        )
+        self.btn_ronghe.setToolTip(
+            "读取当前工区网格 CSV，按左侧所选方法做属性融合 + 聚类；右侧显示潜空间散点与空间网格聚类图。"
+        )
+        self.btn_guoji_weighted.setToolTip(
+            "对高价值连通类属性加权，得到每网格一维「勘探价值」得分；结果在左侧文本框，不弹大图。"
+        )
+        self.btn_guoji_compare.setToolTip(
+            "对比规则加权融合与 GAT 图网络融合得分分布（箱线图）。需安装 PyG；失败时会跳过 GAT 并提示。"
+        )
+        self.btn_guoji_train.setToolTip(
+            "用特征工程后的矩阵训练 XGBoost（配置见 config.yaml）。需先有英买 2 等网格 CSV。"
+        )
+        self.btn_guoji_shap.setToolTip(
+            "对已训练模型做 SHAP 特征重要性；摘要图在右侧。需先训练；可与「SHAP关注特征」下拉联用。"
+        )
+        self.btn_spatial.setToolTip(
+            "【流水线】特征工程 → 加权融合 →（可选）GAT → XGBoost → SHAP 一键跑完；耗时较长，结果写 processed。"
+        )
 
         self.combo_fusion.setStyleSheet(_combo_style)
         self.combo_shap_features.setStyleSheet(_combo_style)

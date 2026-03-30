@@ -1,6 +1,6 @@
 """
 为指定区域生成网格拓扑 CSV，供融合/ML 使用。
-用法：python export_grid_csv.py [THK|MY]  默认 THK
+当前仅支持英买 2：python export_grid_csv.py  或  python export_grid_csv.py MY
 """
 import sys
 import os
@@ -15,16 +15,19 @@ import pandas as pd
 from fractopo import Network
 from utils.crs_metric import unify_traces_area_crs, reproject_to_metric_crs
 
-# 区域配置（与 main.py DATA_SOURCES 对应）
-# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2
+# 区域配置（与 main.py DATA_SOURCES 一致，仅 MY）
 REGIONS = {
-    "THK": {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
-    "MY": {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
+    "MY": {
+        "traces": "MY/11.geojson",
+        "area": "MY/my_area1.geojson",
+        "name": "塔里木盆地英买2",
+        "csv": "Yingmai 2 area in Tarim Basin.csv",
+    },
 }
 
-region_key = (sys.argv[1] if len(sys.argv) > 1 else "THK").upper()
+region_key = (sys.argv[1] if len(sys.argv) > 1 else "MY").upper()
 if region_key not in REGIONS:
-    print(f"未知区域，请用: THK | MY")
+    print("未知区域，当前仅支持: MY（英买2）")
     sys.exit(1)
 
 cfg = REGIONS[region_key]

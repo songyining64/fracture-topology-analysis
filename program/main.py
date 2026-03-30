@@ -46,6 +46,9 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
 from matplotlib import ticker
+from matplotlib.collections import PolyCollection
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib import cm as mpl_cm
 
 from utils.matplotlib_chinese import setup_matplotlib_chinese
 from utils.crs_metric import unify_traces_area_crs, reproject_to_metric_crs
@@ -60,7 +63,16 @@ from fractopo.branches_and_nodes import branches_and_nodes
 from pprint import pprint
 from matplotlib.lines import Line2D
 from demo import Ui_MainWindow
-from fractopo.general import CC_branch, CI_branch, II_branch, X_node, Y_node, I_node
+from fractopo.general import (
+    CC_branch,
+    CI_branch,
+    II_branch,
+    X_node,
+    Y_node,
+    I_node,
+    CONNECTION_COLUMN,
+    CLASS_COLUMN,
+)
 from fractopo import Network
 import geopandas as gpd
 from scipy.stats import gaussian_kde
@@ -95,11 +107,15 @@ except ImportError:
 
 warnings.filterwarnings("ignore", message=".*geographic CRS.*", category=UserWarning)
 
-# 数据源配置：迹线、研究区、显示名、对应的网格CSV（融合/ML用）
-# THK=准噶尔盆地车莫古隆起, MY=塔里木盆地英买2
+# 数据源配置：迹线、研究区、显示名、对应的网格 CSV（融合/ML 用）
+# 当前仅保留塔里木盆地英买 2（MY）
 DATA_SOURCES = [
-    {"traces": "THK/thkceshi-landmark1.geojson", "area": "THK/my_area.geojson", "name": "准噶尔盆地车莫古隆起", "csv": "THK.csv"},
-    {"traces": "MY/11.geojson", "area": "MY/my_area1.geojson", "name": "塔里木盆地英买2", "csv": "Yingmai 2 area in Tarim Basin.csv"},
+    {
+        "traces": "MY/11.geojson",
+        "area": "MY/my_area1.geojson",
+        "name": "塔里木盆地英买2",
+        "csv": "Yingmai 2 area in Tarim Basin.csv",
+    },
 ]
 
 # 全局变量，由 load_data_source 更新
@@ -152,14 +168,9 @@ def load_data_source(index: int):
 
 
 def load_first_available_data_source() -> int:
-    """
-    依次尝试加载数据源，返回成功加载的索引，均失败返回 -1。
-    顺序：MY(1) → THK(0)，优先使用仓库内通常齐全的英买2数据，
-    避免 THK 缺 thkceshi-landmark1.geojson 时启动后 traces 为空。
-    """
-    for idx in (1, 0):
-        if load_data_source(idx):
-            return idx
+    """加载唯一数据源（英买 MY）；失败返回 -1。"""
+    if load_data_source(0):
+        return 0
     return -1
 
 
@@ -299,6 +310,30 @@ class StreamRedirector(QtCore.QObject):
         pass
 
 
+def _make_latent_fusion_cmap_norm(n_k: int):
+    """潜空间聚类图：柔和离散色 + BoundaryNorm；配色与分区底图、散点一致。"""
+    base = np.array(
+        [
+            [0.40, 0.62, 0.86],
+            [0.94, 0.58, 0.48],
+            [0.52, 0.74, 0.54],
+            [0.72, 0.56, 0.82],
+            [0.96, 0.78, 0.40],
+            [0.42, 0.74, 0.80],
+            [0.86, 0.48, 0.56],
+            [0.58, 0.62, 0.72],
+        ],
+        dtype=np.float64,
+    )
+    n_k = max(int(n_k), 1)
+    reps = int(np.ceil(n_k / len(base)))
+    colors = np.vstack([base] * reps)[:n_k]
+    cmap = ListedColormap(colors)
+    bounds = np.arange(n_k + 1, dtype=np.float64) - 0.5
+    norm = BoundaryNorm(bounds, cmap.N)
+    return cmap, norm
+
+
 # 主窗口逻辑
 class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self, parent=None):
@@ -314,15 +349,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.stderr_redirector.text_written.connect(self.append_text)
         sys.stderr = self.stderr_redirector
 
-        # 1.5 数据源下拉与已加载数据一致（默认优先 MY，避免 THK 缺文件时为空）
+        # 1.5 数据源下拉与已加载数据一致（仅英买 MY）
         self.combo_data_source.blockSignals(True)
         if START_DATA_SOURCE_INDEX >= 0:
             self.combo_data_source.setCurrentIndex(START_DATA_SOURCE_INDEX)
         self.combo_data_source.blockSignals(False)
         if START_DATA_SOURCE_INDEX < 0:
             self.append_text(
-                "【提示】未找到任何可用数据源。请在 program/THK、MY 下放置迹线与研究区 GeoJSON，"
-                "详见 README/运行说明。\n"
+                "【提示】未找到英买 2 数据。请在 program/MY 下放置 11.geojson、my_area1.geojson，"
+                "并准备好网格 CSV（见 README / 运行说明）。\n"
             )
 
         # 1.6 绑定数据源切换
@@ -370,9 +405,23 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             scrollbar.setValue(scrollbar.maximum())
 
 
-    def embed_figure(self, figs):
+    def embed_figure(self, figs, *, description=None, descriptions=None):
+        """
+        在右侧画布区嵌入图像。可选：
+        description — 单段说明（多图时每张共用）；
+        descriptions — 与 figs 等长的说明列表（翻页时随当前图切换）。
+        说明显示在图表下方灰色区域。
+        """
         if not isinstance(figs, list):
             figs = [figs]
+        n = len(figs)
+        if descriptions is not None and len(descriptions) == n:
+            self._fig_captions = [str(s).strip() for s in descriptions]
+        elif description:
+            d = str(description).strip()
+            self._fig_captions = [d] * n
+        else:
+            self._fig_captions = [""] * n
 
         while self.canvas_layout.count():
             item = self.canvas_layout.takeAt(0)
@@ -460,6 +509,27 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.canvas_display_layout.addWidget(canvas)
         canvas.draw()
 
+        cap_text = ""
+        if hasattr(self, "_fig_captions") and self.current_fig_idx < len(self._fig_captions):
+            cap_text = self._fig_captions[self.current_fig_idx]
+        cap_lbl = QtWidgets.QLabel()
+        cap_lbl.setObjectName("figureCaptionLabel")
+        cap_lbl.setWordWrap(True)
+        cap_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        cap_lbl.setOpenExternalLinks(False)
+        cap_lbl.setStyleSheet(
+            "QLabel#figureCaptionLabel {"
+            " background-color: #f1f3f5; color: #212529; padding: 10px 12px;"
+            " border-radius: 6px; font-size: 13px; border: 1px solid #dee2e6;"
+            "}"
+        )
+        if cap_text:
+            cap_lbl.setText("【图说明】" + cap_text)
+            cap_lbl.show()
+        else:
+            cap_lbl.hide()
+        self.canvas_display_layout.addWidget(cap_lbl)
+
         if len(self.current_figs) > 1:
             self.lbl_fig_status.setText(f"第 {self.current_fig_idx + 1} 张 / 共 {len(self.current_figs)} 张")
             self.btn_prev_fig.setEnabled(self.current_fig_idx > 0)
@@ -467,6 +537,147 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         QtWidgets.QApplication.processEvents()
 
+    def _plot_latent_fusion_kmeans_regions(
+        self,
+        ax,
+        df_out,
+        x_col: str,
+        y_col: str,
+        kmeans,
+        n_clusters: int,
+    ):
+        """
+        潜空间平面细网格上 KMeans.predict：Voronoi 式分区。
+        网格坐标强制 float64，避免 sklearn 1.6+/Py3.13 下 predict 报 buffer dtype mismatch。
+        返回 (是否画了簇中心, ListedColormap|None, BoundaryNorm|None) 供散点与 colorbar 同配色。
+        """
+        xy = df_out[[x_col, y_col]].to_numpy(dtype=np.float64)
+        cc = getattr(kmeans, "cluster_centers_", None)
+        n_k = int(getattr(kmeans, "n_clusters", n_clusters))
+        if cc is None:
+            return False, None, None
+        cc = np.asarray(cc, dtype=np.float64)
+        if cc.shape != (n_k, 2):
+            return False, None, None
+        x_min, x_max = float(xy[:, 0].min()), float(xy[:, 0].max())
+        y_min, y_max = float(xy[:, 1].min()), float(xy[:, 1].max())
+        dx, dy = x_max - x_min, y_max - y_min
+        pad_x = max(dx * 0.14, 0.08)
+        pad_y = max(dy * 0.14, 0.08)
+        if dx < 1e-12:
+            pad_x = max(pad_x, 0.5)
+        if dy < 1e-12:
+            pad_y = max(pad_y, 0.5)
+        gx = np.linspace(x_min - pad_x, x_max + pad_x, 360, dtype=np.float64)
+        gy = np.linspace(y_min - pad_y, y_max + pad_y, 360, dtype=np.float64)
+        xx, yy = np.meshgrid(gx, gy, indexing="xy")
+        # 与 KMeans(euclidean) 的 predict 等价：最近簇中心标号。
+        # 不用 kmeans.predict：部分环境 sklearn Cython 要求 X 为 C 连续 double，易与 float32 网格冲突报错。
+        grid_xy = np.ascontiguousarray(
+            np.column_stack([xx.ravel(), yy.ravel()]),
+            dtype=np.float64,
+        )
+        cc_c = np.ascontiguousarray(cc, dtype=np.float64)
+        d2 = np.sum((grid_xy[:, np.newaxis, :] - cc_c[np.newaxis, :, :]) ** 2, axis=2)
+        Z = np.argmin(d2, axis=1).reshape(xx.shape)
+        cmap_soft, _ = _make_latent_fusion_cmap_norm(n_k)
+        lev = np.arange(n_k + 1, dtype=np.float64) - 0.5
+        ax.contourf(
+            xx,
+            yy,
+            Z,
+            levels=lev,
+            cmap=cmap_soft,
+            alpha=0.58,
+            antialiased=True,
+            zorder=0,
+        )
+        if n_k > 1:
+            ax.contour(
+                xx,
+                yy,
+                Z,
+                levels=np.arange(n_k - 1, dtype=np.float64) + 0.5,
+                colors="#ffffff",
+                linewidths=0.85,
+                alpha=0.92,
+                zorder=1,
+            )
+        ax.scatter(
+            cc[:, 0],
+            cc[:, 1],
+            marker="X",
+            s=100,
+            c="#2a2a2a",
+            zorder=5,
+            linewidths=1.0,
+            edgecolors="white",
+            label="KMeans 簇中心",
+        )
+        cmap_full, norm_full = _make_latent_fusion_cmap_norm(n_k)
+        return True, cmap_full, norm_full
+
+    def _plot_spatial_cluster_grid(self, ax, df_out, n_clusters: int, method_name: str) -> bool:
+        """
+        将网格 CSV 中的四边形单元按 cluster_id 着色，得到与「断裂密度/聚类」
+        类似的空间绿–蓝填色图（投影坐标，单位 m）。
+        """
+
+        vtx_cols = [
+            "vertex1_x",
+            "vertex1_y",
+            "vertex2_x",
+            "vertex2_y",
+            "vertex3_x",
+            "vertex3_y",
+            "vertex4_x",
+            "vertex4_y",
+        ]
+        if not all(c in df_out.columns for c in vtx_cols):
+            return False
+        if len(df_out) == 0 or "cluster_id" not in df_out.columns:
+            return False
+        arr = df_out[vtx_cols].to_numpy(dtype=float)
+        verts = arr.reshape(-1, 4, 2)
+        z = df_out["cluster_id"].to_numpy(dtype=float)
+        cmap = mpl_cm.get_cmap("GnBu", max(int(n_clusters), 1))
+        bounds = np.arange(-0.5, float(n_clusters) + 0.5, 1.0)
+        norm = BoundaryNorm(bounds, cmap.N)
+        pc = PolyCollection(
+            verts,
+            array=z,
+            cmap=cmap,
+            norm=norm,
+            edgecolors="0.82",
+            linewidths=0.12,
+        )
+        ax.add_collection(pc)
+        ax.autoscale()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("X (m)", fontsize=11)
+        ax.set_ylabel("Y (m)", fontsize=11)
+        zh_fonts = plt.rcParams.get("font.sans-serif", [])
+        font_family = (
+            zh_fonts[0]
+            if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0
+            else None
+        )
+        ax.set_title(
+            f"空间网格聚类分布（{method_name}）",
+            fontsize=12,
+            fontfamily=font_family,
+        )
+        ax.tick_params(axis="both", labelsize=9)
+        fmt = ticker.ScalarFormatter(useMathText=True)
+        fmt.set_powerlimits((-3, 8))
+        ax.xaxis.set_major_formatter(fmt)
+        ax.yaxis.set_major_formatter(fmt)
+        cb = plt.colorbar(pc, ax=ax, fraction=0.046, pad=0.03)
+        cb.set_label("聚类簇编号", fontsize=10)
+        for spine in ax.spines.values():
+            spine.set_color("#1a1a1a")
+            spine.set_linewidth(1.1)
+        return True
 
     def _get_guoji_csv(self):
         """根据当前数据源获取对应的网格 CSV 路径。"""
@@ -571,7 +782,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 plt.imshow(img)
                 plt.axis("off")
                 plt.tight_layout()
-                self.embed_figure(plt.gcf())
+                self.embed_figure(
+                    plt.gcf(),
+                    description=(
+                        "箱线图对比「规则加权融合」与「GAT 图注意力融合」在每张网格上的得分分布；"
+                        "箱体与须须表示分位与离散程度，若离群点多说明工区内差异大。"
+                        "若 GAT 侧退化，左侧文本会说明原因。"
+                    ),
+                )
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
             self.text_browser.moveCursor(QTextCursor.End)
@@ -630,7 +848,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
             # 抓取训练生成的散点图并嵌入
             fig = plt.gcf()
-            self.embed_figure([fig])
+            self.embed_figure(
+                [fig],
+                description=(
+                    "XGBoost 训练过程输出的诊断图（具体子图以程序为准）：通常含训练/交叉验证相关的"
+                    "预测效果或残差示意，用于快速判断拟合是否正常；详细数值见左侧文本与 model 目录报告。"
+                ),
+            )
             plt.close('all')
 
             txt = "【XGBoost 训练结果】\n\n"
@@ -696,7 +920,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 plt.imshow(img)
                 plt.axis("off")
                 fig.tight_layout()
-                self.embed_figure([fig])
+                self.embed_figure(
+                    [fig],
+                    description=(
+                        "SHAP 摘要图：每一行对应一个输入特征；横轴为该特征对模型输出的 SHAP 贡献（影响方向与幅度）；"
+                        "点色表示该样本上特征取值高低。可据此判断哪些拓扑/融合属性最能驱动当前目标列预测。"
+                    ),
+                )
 
             plt.close('all')
             QMessageBox.information(self, "完成", "SHAP 分析已成功运行，特征图已在右侧显示！")
@@ -753,7 +983,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 plt.imshow(img)
                 plt.axis("off")
                 fig.tight_layout()
-                self.embed_figure([fig])
+                self.embed_figure(
+                    [fig],
+                    description=(
+                        "「一键空间–拓扑融合流水线」结束后的 SHAP 汇总图（若已生成）："
+                        "含义与单独 SHAP 按钮相同，特征重要性针对流水线中指定的目标列。"
+                    ),
+                )
 
             plt.close('all')
 
@@ -814,7 +1050,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for s in ax.spines.values():
             s.set_color("#0d0d0d")
             s.set_linewidth(1.35)
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description="原始断裂迹线图：蓝色线为输入迹线，坐标系见标题；用于检查数据范围、与研究区是否一致，未做拓扑分类。",
+        )
 
     def run_fenleihou(self):
         warnings.filterwarnings("ignore")
@@ -832,7 +1071,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
-        network.branch_gdf.plot(colors=[assign_colors(bt) for bt in network.branch_types], ax=ax)
+        network.branch_gdf.plot(
+            colors=[assign_colors(bt) for bt in network.branch_types],
+            ax=ax,
+            aspect="equal",
+        )
         handles = [
             plt.Line2D([0], [0], color="green", lw=2, label="CC_branch / X_node"),
             plt.Line2D([0], [0], color="blue", lw=2, label="CI_branch / Y_node"),
@@ -846,7 +1089,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for s in ax.spines.values():
             s.set_color("#0d0d0d")
             s.set_linewidth(1.35)
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "分类后迹线图：按 fractopo 分支类型（CC/CI/II）对线段着色；图例中绿色/蓝色/黑色对应不同分支类，"
+                "红色为无法归类或边界相关；反映拓扑划分后的空间模式。"
+            ),
+        )
 
     def run_tuopuhou1(self):
         warnings.filterwarnings("ignore")
@@ -864,9 +1113,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
         ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
-        network.trace_gdf.plot(ax=ax, linewidth=0.5)
-        network.node_gdf.plot(c=[assign_colors(bt) for bt in network.node_types], ax=ax, markersize=10)
-        area.boundary.plot(ax=ax, color="red")
+        network.trace_gdf.plot(ax=ax, linewidth=0.5, aspect="equal")
+        network.node_gdf.plot(
+            c=[assign_colors(bt) for bt in network.node_types],
+            ax=ax,
+            markersize=10,
+            aspect="equal",
+        )
+        area.boundary.plot(ax=ax, color="red", aspect="equal")
         handles = [
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="green", markersize=10, label="X_node"),
             plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="blue", markersize=10, label="Y_node"),
@@ -877,7 +1131,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
         ax.set_aspect('equal')
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "拓扑化视图 1：浅色为迹线；节点按 X/Y/I 类型着色（见左下角图例示意），红线为研究区边界。"
+                "用于核对节点识别是否落在迹线交点等位置。"
+            ),
+        )
 
     def run_tuopuhou2(self):
         warnings.filterwarnings("ignore")
@@ -904,7 +1164,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             'X': 'blue',  # 假设X类型节点用蓝色表示
             'Y': 'yellow',  # 假设Y类型节点用黄色表示
         }
-        type_to_color2 = {'CC': 'red', 'CI': 'green', 'II': 'blue'}
         # 定义节点类型到形状的映射
         type_to_shape = {
             'E': 'o',
@@ -915,24 +1174,61 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # 开始绘图
         fig, ax = plt.subplots(figsize=(9, 9 * rate))
 
-        # 按分支类型分组绘制（branch_gdf），每类只画一次
-        for branch_type, color in type_to_color2.items():
-            subset = network.branch_gdf[network.branch_gdf['Class'] == branch_type]
-            if not subset.empty:
-                subset.plot(ax=ax, color=color, linewidth=1, label=branch_type)
+        # 按分支类型分组绘制（branch_gdf）；fractopo≥0.9 用 Connection（C - C 等），旧版曾用 Class（CC/CI/II）
+        bg = network.branch_gdf
+        if CONNECTION_COLUMN in bg.columns:
+            branch_draw = [
+                (CC_branch, "red", "CC"),
+                (CI_branch, "green", "CI"),
+                (II_branch, "blue", "II"),
+            ]
+            for conn_val, color, leg in branch_draw:
+                subset = bg[bg[CONNECTION_COLUMN] == conn_val]
+                if not subset.empty:
+                    subset.plot(
+                        ax=ax,
+                        color=color,
+                        linewidth=1,
+                        label=leg,
+                        aspect="equal",
+                    )
+        elif "Class" in bg.columns:
+            for branch_type, color in (("CC", "red"), ("CI", "green"), ("II", "blue")):
+                subset = bg[bg["Class"] == branch_type]
+                if not subset.empty:
+                    subset.plot(
+                        ax=ax,
+                        color=color,
+                        linewidth=1,
+                        label=branch_type,
+                        aspect="equal",
+                    )
+        else:
+            QMessageBox.warning(
+                self,
+                "无法绘制分支",
+                "branch_gdf 中未找到「Connection」或「Class」列，可能与当前 fractopo 版本不兼容。",
+            )
+            return
 
         # 遍历每个节点类型，绘制对应类型的节点
         for node_type in type_to_color.keys():
-            nodes = network.node_gdf[network.node_gdf['Class'] == node_type]
+            nodes = network.node_gdf[network.node_gdf[CLASS_COLUMN] == node_type]
             if not nodes.empty:
                 ax.scatter(nodes.geometry.x, nodes.geometry.y, s=50,
                            c=type_to_color[node_type], marker=type_to_shape[node_type], label=node_type, zorder=5)
-        area.boundary.plot(ax=ax, color="red")
+        area.boundary.plot(ax=ax, color="red", aspect="equal")
         plt.xlim((left - width, right + width))
         plt.ylim((down - height, up + height))
         ax.legend(title=' Type')
         ax.set_aspect('equal')
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "拓扑化视图 2：彩色线段表示分支连接类型（C-C / C-I / I-I 等 fractopo Connection 记号），"
+                "节点散点为 X/Y/I/E 类型；与视图 1 互补，侧重「线段-节点」联合展示。"
+            ),
+        )
 
     def run_tuopushuxing(self):
         warnings.filterwarnings("ignore")
@@ -984,7 +1280,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             s.set_color("#0d0d0d")
             s.set_linewidth(1.35)
         plt.legend()
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "方位角集图：不同颜色对应不同方位组（如 N-S 与 E-W 及角度范围）；"
+                "用于查看各走向迹线在工区内的分布是否分组明显。"
+            ),
+        )
 
     def run_relitu(self):
         warnings.filterwarnings("ignore")
@@ -1005,7 +1307,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for s in ax.spines.values():
             s.set_color("#0d0d0d")
             s.set_linewidth(1.35)
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "断裂密度热力图：沿迹线加密采样点后做核密度估计，颜色越暖表示该处线密度越高；"
+                "反映断裂在平面上的聚集带，并非网格 CSV 中的属性。"
+            ),
+        )
 
     def a(self):
         warnings.filterwarnings("ignore")
@@ -1075,7 +1383,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     elif "exponential" in tlabel:
                         txt.set_color(fit_line_colors["exponential"])
 
-        self.embed_figure([fig1, fig2])
+        self.embed_figure(
+            [fig1, fig2],
+            descriptions=[
+                "迹线长度分布直方图及幂律、对数正态、指数等典型拟合曲线；用于判断标度律与共守分布形态。",
+                "分支长度分布及同样拟合对比；分支由迹线拓扑分解得到，长度统计与迹线层可对照阅读。",
+            ],
+        )
 
     def run_meiguitu(self):
         warnings.filterwarnings("ignore")
@@ -1115,7 +1429,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             for one_ax in fig.axes:
                 one_ax.set_title(title_text, fontfamily=font_family, fontsize=14)
 
-        self.embed_figure([fig1, fig2])
+        self.embed_figure(
+            [fig1, fig2],
+            descriptions=[
+                "迹线方位玫瑰图：极坐标下各走向区间频数，峰值方向即优势构造走向。",
+                "分支方位玫瑰图：对拓扑分支线段统计走向，可与迹线玫瑰图对比构造与分解后差异。",
+            ],
+        )
 
     def run_sanyuantu(self):
         warnings.filterwarnings("ignore")
@@ -1173,7 +1493,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 for t in leg.get_texts():
                     t.set_fontfamily(font_family)
 
-        self.embed_figure([fig1, fig2])
+        self.embed_figure(
+            [fig1, fig2],
+            descriptions=[
+                "节点类型三元图（XYI）：三角形顶点为 X、Y、I 三类节点占比，落在三角形内的点云表示样本整体组成。",
+                "分支类型三元图（CC、CI、II）：三端元为三类分支在数量或长度加权下的比例（定义见 fractopo）。",
+            ],
+        )
 
     def run_guanxi(self):
         warnings.filterwarnings("ignore")
@@ -1253,7 +1579,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             fig.set_size_inches(15, 7.8)
 
         if figs:
-            self.embed_figure(figs)
+            _cap_rel = (
+                "交叉与相邻关系图：各子图表示两方位集之间交切（cross-cut）与不同方向邻接（abutting）的计数统计；"
+                "柱色对应图例中关系类型；侧栏为 trace count。翻页可浏览不同方位集组合。"
+            )
+            self.embed_figure(figs, descriptions=[_cap_rel] * len(figs))
 
     def b(self):
         branches, nodes = branches_and_nodes(traces, area, snap_threshold=0.001)
@@ -1309,7 +1639,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 if hasattr(handle, "_sizes"):
                     handle._sizes = [20]
         fig.subplots_adjust(left=0.07, right=0.88, top=0.90, bottom=0.14, wspace=0.18)
-        self.embed_figure(fig)
+        self.embed_figure(
+            fig,
+            description=(
+                "左：原始迹线与研究区边界；右：节点类型（X/Y/I 等）在平面上的位置及研究区；"
+                "两图共用坐标比例，便于与拓扑化视图对照检查识别结果。"
+            ),
+        )
 
     def _plot_contour_safe(self, network, sampled_grid, parameters):
         import pandas as pd
@@ -1357,10 +1693,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 ax.set_title(f"平滑热力图: {param}", fontsize=14, pad=15)
                 plt.tight_layout()
 
+                _cap = (
+                    f"本图为网格拓扑参数「{param}」的平滑填色：对网格中心做三角剖分后插值填色；"
+                    f"色条为该指标量纲；浅底为迹线叠置。坐标为当前投影平面。"
+                )
                 try:
-                    self.embed_figure([fig])
+                    self.embed_figure([fig], description=_cap)
                 except TypeError:
-                    self.embed_figure(fig)
+                    self.embed_figure(fig, description=_cap)
 
 
             except Exception as e:
@@ -1520,19 +1860,86 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
         n_samples = len(df_out)
         n_clusters = int(df_out["cluster_id"].max()) + 1
-        fig1, ax1 = plt.subplots(figsize=(7, 6))
-        ax1.grid(False)
-        scatter = ax1.scatter(
-            df_out[x_col], df_out[y_col],
-            c=df_out["cluster_id"], cmap="tab10", s=15, alpha=0.8,
+        spatial_ok = all(
+            c in df_out.columns
+            for c in (
+                "vertex1_x",
+                "vertex1_y",
+                "vertex2_x",
+                "vertex2_y",
+                "vertex3_x",
+                "vertex3_y",
+                "vertex4_x",
+                "vertex4_y",
+            )
         )
+        if spatial_ok:
+            # 左右排列；尺寸略小于原先的 13.5×5.8，减轻占屏
+            fig1, (ax1, ax2) = plt.subplots(
+                1,
+                2,
+                figsize=(11.6, 5.25),
+                gridspec_kw={"wspace": 0.26},
+            )
+        else:
+            fig1, ax1 = plt.subplots(figsize=(7, 6))
+            ax2 = None
+        ax1.set_axisbelow(True)
+        ax1.grid(True, alpha=0.42, linestyle="-", linewidth=0.55, color="0.75", zorder=0.3)
+        ax1.set_facecolor("#e8ebf2")
+        has_center_legend, cmap_latent, norm_latent = self._plot_latent_fusion_kmeans_regions(
+            ax1, df_out, x_col, y_col, kmeans, n_clusters
+        )
+        _skw = dict(
+            s=19,
+            alpha=0.9,
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.32,
+        )
+        if cmap_latent is not None and norm_latent is not None:
+            scatter = ax1.scatter(
+                df_out[x_col],
+                df_out[y_col],
+                c=df_out["cluster_id"],
+                cmap=cmap_latent,
+                norm=norm_latent,
+                **_skw,
+            )
+        else:
+            scatter = ax1.scatter(
+                df_out[x_col],
+                df_out[y_col],
+                c=df_out["cluster_id"],
+                cmap="tab10",
+                **_skw,
+            )
         ax1.set_xlabel(x_col)
         ax1.set_ylabel(y_col)
-        ax1.set_title(f"拓扑属性融合（{method_name}）：{x_col}–{y_col}（颜色=聚类类型）")
+        ax1.set_title(
+            f"拓扑属性融合（{method_name}）：{x_col}–{y_col}"
+            f"\n（柔和底色=KMeans 分区｜散点=网格单元）",
+            fontsize=11,
+        )
         plt.colorbar(scatter, ax=ax1, label="cluster_id")
+        if has_center_legend:
+            leg = ax1.legend(loc="best", fontsize=8, framealpha=0.92)
+            if leg is not None:
+                leg.set_zorder(6)
         ax1.set_aspect("equal", adjustable="datalim")
+        if ax2 is not None:
+            if not self._plot_spatial_cluster_grid(ax2, df_out, n_clusters, method_name):
+                ax2.text(0.5, 0.5, "无法绘制空间网格（缺少顶点列）", ha="center", va="center", transform=ax2.transAxes)
+                ax2.set_axis_off()
         plt.tight_layout()
-        self.embed_figure(fig1)
+        self.embed_figure(
+            fig1,
+            description=(
+                "属性融合与聚类：左图为多拓扑指标降维后的潜空间（散点为网格、底色为 KMeans 分区），"
+                "右图为同一聚类编号在平面网格上的空间分布（绿–蓝为簇编号）。"
+                "用于观察属性相似簇是否在空间上成片出现。"
+            ),
+        )
         summary_lines = [
             "【智能拓扑分析结果】",
             "",
