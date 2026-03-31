@@ -3,12 +3,25 @@
 拓扑属性融合模块：将多个高级拓扑属性通过 PCA / 自编码器 / UMAP / VAE 融合成新属性。
 用于机器学习扩展：输入为网格 CSV 中的拓扑指标，输出为融合主成分、簇标签等。
 """
+import os
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from utils.config_loader import load_config
+from utils.export_utils import export_spatial_dataframe, clusters_gpkg_layer_name, export_table
+from utils.logging_utils import get_logger
+
+try:
+    from feature_engineering import CONNECTIVITY_FEATURE_COLUMNS
+except ImportError:
+    CONNECTIVITY_FEATURE_COLUMNS = (
+        "Connections per Branch",
+        "Connections per Trace",
+        "Connection Frequency",
+    )
 
 DEFAULT_FEATURE_COLUMNS = [
     "Fracture Intensity B21",
@@ -27,6 +40,19 @@ DEFAULT_FEATURE_COLUMNS = [
     "Trace Min Length",
     "Trace Max Length",
 ]
+
+
+def _runtime_cfg():
+    cfg = load_config()
+    clustering_cfg = (cfg.get("clustering") or {}) if isinstance(cfg, dict) else {}
+    fusion_cfg = (cfg.get("fusion") or {}) if isinstance(cfg, dict) else {}
+    log_cfg = (cfg.get("logging") or {}) if isinstance(cfg, dict) else {}
+    logger = get_logger(
+        "topology_fusion",
+        level=log_cfg.get("level", "INFO"),
+        log_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), log_cfg.get("file", "logs/pipeline.log")),
+    )
+    return clustering_cfg, fusion_cfg, logger
 
 
 def load_and_prepare(
@@ -65,9 +91,14 @@ def fuse_with_pca(
 
 def cluster_labels(
     X_latent: np.ndarray,
-    n_clusters: int = 4,
-    random_state: int = 42,
+    n_clusters: Optional[int] = None,
+    random_state: Optional[int] = None,
 ) -> Tuple[np.ndarray, KMeans]:
+    clustering_cfg, _, _ = _runtime_cfg()
+    if n_clusters is None:
+        n_clusters = int(clustering_cfg.get("n_clusters", 4))
+    if random_state is None:
+        random_state = int(clustering_cfg.get("random_state", 42))
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
     labels = kmeans.fit_predict(X_latent)
     return labels, kmeans
@@ -86,6 +117,138 @@ def interpret_clusters(
     return means
 
 
+def compute_cluster_quality_metrics(X_latent: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+    """潜空间上的聚类质量：轮廓系数（越大越好）、Davies–Bouldin（越小越好）。"""
+    X_latent = np.asarray(X_latent, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int64)
+    out: Dict[str, float] = {}
+    uniq = np.unique(labels)
+    if len(X_latent) < 3 or len(uniq) < 2 or len(uniq) >= len(X_latent):
+        return out
+    try:
+        from sklearn.metrics import silhouette_score, davies_bouldin_score
+
+        out["silhouette_score"] = float(silhouette_score(X_latent, labels))
+        out["davies_bouldin_index"] = float(davies_bouldin_score(X_latent, labels))
+    except Exception:
+        pass
+    return out
+
+
+def compute_cluster_stability_ari(
+    X_latent: np.ndarray,
+    n_clusters: int,
+    seeds: Optional[List[int]] = None,
+) -> Dict[str, float]:
+    """
+    通过不同随机种子重复 KMeans，计算标签间 ARI 平均值，评估簇稳定性。
+    """
+    X_latent = np.asarray(X_latent, dtype=np.float64)
+    if len(X_latent) < max(4, n_clusters):
+        return {}
+    if seeds is None:
+        seeds = [7, 13, 23, 37, 41]
+    try:
+        from sklearn.metrics import adjusted_rand_score
+    except Exception:
+        return {}
+    labels_list: List[np.ndarray] = []
+    for sd in seeds:
+        km = KMeans(n_clusters=int(n_clusters), random_state=int(sd), n_init=10)
+        labels_list.append(km.fit_predict(X_latent))
+    aris: List[float] = []
+    for i in range(len(labels_list)):
+        for j in range(i + 1, len(labels_list)):
+            aris.append(float(adjusted_rand_score(labels_list[i], labels_list[j])))
+    if not aris:
+        return {}
+    arr = np.asarray(aris, dtype=np.float64)
+    return {
+        "cluster_stability_ari_mean": float(arr.mean()),
+        "cluster_stability_ari_std": float(arr.std(ddof=0)),
+        "cluster_stability_pairs": int(len(aris)),
+    }
+
+
+def build_cluster_name_map(
+    cluster_means: pd.DataFrame,
+    connectivity_cols: Optional[List[str]] = None,
+    intensity_cols: Tuple[str, ...] = ("Fracture Intensity B21", "Fracture Intensity P21"),
+) -> Dict[int, str]:
+    """
+    根据各簇在「连通性特征组」与强度指标上相对全体簇均值的偏高/偏低，生成简短中文簇名。
+    """
+    connectivity_cols = [
+        c
+        for c in (connectivity_cols or list(CONNECTIVITY_FEATURE_COLUMNS))
+        if c in cluster_means.columns
+    ]
+    int_col = next((c for c in intensity_cols if c in cluster_means.columns), None)
+    name_map: Dict[int, str] = {}
+    for cid in cluster_means.index:
+        cid_i = int(cid)
+        row = cluster_means.loc[cid]
+        if connectivity_cols:
+            highs = sum(
+                1
+                for c in connectivity_cols
+                if float(row[c]) >= float(cluster_means[c].median())
+            )
+            conn_lbl = "高连通" if highs * 2 >= len(connectivity_cols) else "低连通"
+        else:
+            conn_lbl = "连通性未定"
+        if int_col is not None:
+            hi = float(row[int_col]) >= float(cluster_means[int_col].median())
+            int_lbl = "高强度" if hi else "低强度"
+            name_map[cid_i] = f"{conn_lbl}-{int_lbl}簇"
+        else:
+            name_map[cid_i] = f"{conn_lbl}簇"
+    return name_map
+
+
+def attach_cluster_names(df: pd.DataFrame, name_map: Dict[int, str]) -> pd.DataFrame:
+    out = df.copy()
+    if "cluster_id" not in out.columns:
+        return out
+    out["cluster_name"] = out["cluster_id"].map(lambda i: name_map.get(int(i), "")).fillna("")
+    return out
+
+
+def build_cluster_summary_rows(
+    df_out: pd.DataFrame,
+    cluster_means: pd.DataFrame,
+    name_map: Dict[int, str],
+    report_cols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """每簇网格数、空间占比、选定属性的簇内均值。"""
+    total = len(df_out)
+    report_cols = report_cols or [
+        c
+        for c in list(CONNECTIVITY_FEATURE_COLUMNS)
+        if c in cluster_means.columns
+    ][:6]
+    extra = [c for c in ("Fracture Intensity B21", "Fracture Intensity P21") if c in cluster_means.columns]
+    for c in extra:
+        if c not in report_cols:
+            report_cols = list(report_cols) + [c]
+    rows: List[Dict[str, Any]] = []
+    for cid in sorted(df_out["cluster_id"].unique()):
+        cid = int(cid)
+        sub = df_out[df_out["cluster_id"] == cid]
+        row: Dict[str, Any] = {
+            "cluster_id": cid,
+            "cluster_name": name_map.get(cid, ""),
+            "n_cells": len(sub),
+            "spatial_fraction": (len(sub) / total) if total else 0.0,
+        }
+        if cid in cluster_means.index:
+            for c in report_cols:
+                if c in cluster_means.columns:
+                    row[f"mean_{c}"] = float(cluster_means.loc[cid, c])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def _check_min_data(df: pd.DataFrame, X: np.ndarray, used_cols: list, min_samples: int = 2, min_features: int = 2):
     n_samples, n_features = X.shape
     if n_samples < min_samples or n_features < min_features:
@@ -98,9 +261,12 @@ def _check_min_data(df: pd.DataFrame, X: np.ndarray, used_cols: list, min_sample
 def run_fusion_pipeline(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
-    n_components: int = 2,
-    n_clusters: int = 4,
+    n_components: Optional[int] = None,
+    n_clusters: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, StandardScaler, PCA, KMeans, pd.DataFrame]:
+    clustering_cfg, _, logger = _runtime_cfg()
+    if n_components is None:
+        n_components = int(clustering_cfg.get("pca_components", 2))
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
     n_samples, n_features = X.shape
     if n_samples < 2 or n_features < 2:
@@ -115,6 +281,7 @@ def run_fusion_pipeline(
         df[f"PC{i+1}"] = X_pca[:, i]
     df["cluster_id"] = labels
     cluster_means = interpret_clusters(df, used_cols, labels, n_clusters)
+    logger.info("PCA 融合完成：samples=%s features=%s clusters=%s", n_samples, n_features, int(df["cluster_id"].nunique()))
     return df, scaler, pca, kmeans, cluster_means
 
 
@@ -171,10 +338,15 @@ def fuse_with_autoencoder(
 def run_fusion_pipeline_ae(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
-    n_latent: int = 2,
-    n_clusters: int = 4,
-    ae_epochs: int = 100,
+    n_latent: Optional[int] = None,
+    n_clusters: Optional[int] = None,
+    ae_epochs: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, StandardScaler, KMeans, pd.DataFrame]:
+    clustering_cfg, _, _ = _runtime_cfg()
+    if n_latent is None:
+        n_latent = int(clustering_cfg.get("ae_latent", 2))
+    if ae_epochs is None:
+        ae_epochs = int(clustering_cfg.get("ae_epochs", 100))
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
     _check_min_data(df, X, used_cols)
     Z, scaler, _ = fuse_with_autoencoder(X, n_latent=n_latent, standardize=True, epochs=ae_epochs)
@@ -216,10 +388,15 @@ def fuse_with_umap(
 def run_fusion_pipeline_umap(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
-    n_components: int = 2,
-    n_clusters: int = 4,
-    n_neighbors: int = 15,
+    n_components: Optional[int] = None,
+    n_clusters: Optional[int] = None,
+    n_neighbors: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, StandardScaler, object, KMeans, pd.DataFrame]:
+    clustering_cfg, _, _ = _runtime_cfg()
+    if n_components is None:
+        n_components = int(clustering_cfg.get("umap_components", 2))
+    if n_neighbors is None:
+        n_neighbors = int(clustering_cfg.get("umap_neighbors", 15))
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
     _check_min_data(df, X, used_cols)
     X_umap, scaler, reducer = fuse_with_umap(
@@ -301,10 +478,15 @@ def fuse_with_vae(
 def run_fusion_pipeline_vae(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
-    n_latent: int = 2,
-    n_clusters: int = 4,
-    vae_epochs: int = 150,
+    n_latent: Optional[int] = None,
+    n_clusters: Optional[int] = None,
+    vae_epochs: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, StandardScaler, KMeans, pd.DataFrame]:
+    clustering_cfg, _, _ = _runtime_cfg()
+    if n_latent is None:
+        n_latent = int(clustering_cfg.get("vae_latent", 2))
+    if vae_epochs is None:
+        vae_epochs = int(clustering_cfg.get("vae_epochs", 150))
     df, X, used_cols = load_and_prepare(csv_path, feature_columns=feature_columns)
     _check_min_data(df, X, used_cols)
     Z, scaler, _ = fuse_with_vae(X, n_latent=n_latent, standardize=True, epochs=vae_epochs)
@@ -314,6 +496,42 @@ def run_fusion_pipeline_vae(
     df["cluster_id"] = labels
     cluster_means = interpret_clusters(df, used_cols, labels, n_clusters)
     return df, scaler, kmeans, cluster_means
+
+
+def export_cluster_results(
+    df_out: pd.DataFrame,
+    csv_path: str,
+    method_name: str,
+    *,
+    out_dir: Optional[str] = None,
+    cluster_summary: Optional[pd.DataFrame] = None,
+    quality_metrics: Optional[Dict[str, float]] = None,
+) -> dict:
+    _, fusion_cfg, logger = _runtime_cfg()
+    if out_dir is None:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "data", "processed")
+    stem = f"{os.path.splitext(os.path.basename(csv_path))[0]}_{method_name.lower()}_clusters"
+    layer = clusters_gpkg_layer_name(method_name)
+    paths = export_spatial_dataframe(
+        df_out,
+        out_dir,
+        stem,
+        export_csv=bool(fusion_cfg.get("export_cluster_csv", True)),
+        export_gpkg=bool(fusion_cfg.get("export_cluster_gpkg", True)),
+        layer_name=layer,
+    )
+    aux = {}
+    if cluster_summary is not None and not cluster_summary.empty:
+        aux["cluster_summary_csv"] = export_table(cluster_summary, out_dir, f"{stem}_per_cluster_stats")
+    if quality_metrics:
+        import json
+
+        qpath = os.path.join(out_dir, f"{stem}_fusion_quality.json")
+        with open(qpath, "w", encoding="utf-8") as f:
+            json.dump(quality_metrics, f, ensure_ascii=False, indent=2)
+        aux["quality_json"] = qpath
+    logger.info("聚类结果导出：method=%s csv=%s gpkg=%s layer=%s", method_name, paths.get("csv"), paths.get("gpkg"), layer)
+    return {**paths, **aux}
 
 
 if __name__ == "__main__":

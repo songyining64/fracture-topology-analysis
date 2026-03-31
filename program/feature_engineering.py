@@ -7,9 +7,11 @@
 import os
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold, mutual_info_regression, SelectKBest, f_regression
+from utils.config_loader import load_config
+from utils.logging_utils import get_logger
 
 # 基础属性（长度、密度、数量等）
 BASE_ATTRS = [
@@ -24,8 +26,70 @@ BASE_ATTRS = [
 HIGH_VALUE_ATTRS = [
     "Connections per Branch", "Connections per Trace", "Connection Frequency",
 ]
+# 与 HIGH_VALUE_ATTRS 一致：显式命名为「连通性特征组」，便于 SHAP/文档引用
+CONNECTIVITY_FEATURE_COLUMNS: Tuple[str, ...] = tuple(HIGH_VALUE_ATTRS)
 # 默认全部候选
 DEFAULT_FEATURE_COLUMNS = BASE_ATTRS + HIGH_VALUE_ATTRS
+
+
+def is_connectivity_feature(name: str) -> bool:
+    """是否为网格 CSV 中与网络连通性直接相关的拓扑指标列。"""
+    return name in set(CONNECTIVITY_FEATURE_COLUMNS)
+
+
+def suggest_regression_target_columns(
+    csv_path: str,
+    *,
+    max_suggestions: int = 16,
+) -> List[str]:
+    """
+    从原始网格 CSV 中挑出适合作为回归目标的数值列（方差>0、非全缺失），
+    供 GUI 下拉推荐；不替代用户最终选择。
+    """
+    from utils.export_utils import VERTEX_COLUMNS
+
+    vertex_like: Set[str] = set(VERTEX_COLUMNS)
+    df = load_raw(csv_path)
+    out: List[str] = []
+    for col in df.columns:
+        if col in vertex_like:
+            continue
+        if str(col).lower().startswith("vertex"):
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().sum() < 3:
+            continue
+        v = s.dropna().values
+        if len(v) > 1 and float(np.std(v)) < 1e-10:
+            continue
+        out.append(col)
+    # 优先：常见目标与连通性相关列
+    priority = (
+        "Fracture Intensity B21",
+        "Fracture Intensity P21",
+        "Connections per Branch",
+        "Connections per Trace",
+        "Connection Frequency",
+        "Areal Frequency B20",
+        "Branch Mean Length",
+    )
+    ranked = sorted(
+        out,
+        key=lambda c: (priority.index(c) if c in priority else len(priority), c),
+    )
+    return ranked[: max(1, max_suggestions)]
+
+
+def _runtime_cfg():
+    cfg = load_config()
+    fe_cfg = (cfg.get("feature_engineering") or {}) if isinstance(cfg, dict) else {}
+    log_cfg = (cfg.get("logging") or {}) if isinstance(cfg, dict) else {}
+    logger = get_logger(
+        "feature_engineering",
+        level=log_cfg.get("level", "INFO"),
+        log_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), log_cfg.get("file", "logs/pipeline.log")),
+    )
+    return fe_cfg, logger
 
 
 def load_raw(csv_path: str) -> pd.DataFrame:
@@ -114,9 +178,9 @@ def build_feature_matrix(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
     target_column: Optional[str] = None,
-    normalize_method: str = "standard",
-    outlier_method: str = "iqr",
-    variance_threshold: float = 1e-6,
+    normalize_method: Optional[str] = None,
+    outlier_method: Optional[str] = None,
+    variance_threshold: Optional[float] = None,
     n_select_mi: Optional[int] = None,
     drop_all_nan: bool = True,
     out_processed_dir: Optional[str] = None,
@@ -129,6 +193,15 @@ def build_feature_matrix(
     """
     if feature_columns is None:
         feature_columns = DEFAULT_FEATURE_COLUMNS
+    fe_cfg, logger = _runtime_cfg()
+    if normalize_method is None:
+        normalize_method = fe_cfg.get("normalize_method", "standard")
+    if outlier_method is None:
+        outlier_method = fe_cfg.get("outlier_method", "iqr")
+    if variance_threshold is None:
+        variance_threshold = float(fe_cfg.get("variance_threshold", 1e-6))
+    if n_select_mi is None:
+        n_select_mi = fe_cfg.get("n_select_mi")
     df = load_raw(csv_path)
     # 若目标列在特征中，排除以避免泄漏
     if target_column and target_column in feature_columns:
@@ -185,6 +258,13 @@ def build_feature_matrix(
             out_df[target_column] = y
         out_df.to_csv(out_csv, index=False)
         result["path_feature_matrix"] = out_csv
+    logger.info(
+        "特征工程完成：csv=%s samples=%s features=%s target=%s",
+        csv_path,
+        result["n_samples"],
+        result["n_features"],
+        target_column,
+    )
     return result
 
 

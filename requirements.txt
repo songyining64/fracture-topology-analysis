@@ -1,5 +1,6 @@
 # 油气区断裂网络连通性智能分析与预测系统 — Python 依赖（项目根目录执行 pip install -r requirements.txt）
-fractopo>=0.6.0
+# 推荐 Python 3.10 / 3.11；fractopo 在本仓库按 0.9.x 适配与测试。
+fractopo>=0.9,<1.0
 geopandas>=0.12.0
 PyQt5>=5.15
 matplotlib>=3.5

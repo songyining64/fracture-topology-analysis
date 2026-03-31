@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fracture-connectivity-system"
+version = "1.2.0"
+description = "Oil-gas fracture network connectivity analysis and prediction system"
+requires-python = ">=3.9"
+readme = "README.md"
+authors = [{ name = "Project Team" }]
+
+[tool.setuptools]
+package-dir = {"" = "program"}
+
+[tool.setuptools.packages.find]
+where = ["program"]
+include = ["ml*", "utils*"]
+

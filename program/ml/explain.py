@@ -14,7 +14,22 @@ if _PROGRAM_DIR not in sys.path:
 
 # 绘图前配置中文字体
 from utils.matplotlib_chinese import setup_matplotlib_chinese
+from utils.config_loader import load_config
+from utils.export_utils import export_table
+from utils.logging_utils import get_logger
 setup_matplotlib_chinese()
+
+
+def _runtime_cfg():
+    cfg = load_config()
+    explain_cfg = (cfg.get("explain") or {}) if isinstance(cfg, dict) else {}
+    log_cfg = (cfg.get("logging") or {}) if isinstance(cfg, dict) else {}
+    logger = get_logger(
+        "ml.explain",
+        level=log_cfg.get("level", "INFO"),
+        log_file=os.path.join(_PROGRAM_DIR, log_cfg.get("file", "logs/pipeline.log")),
+    )
+    return explain_cfg, logger
 
 
 def _reorder_by_emphasis(
@@ -39,6 +54,24 @@ def _reorder_by_emphasis(
     shap_values = shap_values[:, order]
     X = X[:, order]
     return shap_values, X, [fn[i] for i in order]
+
+
+def connectivity_shap_breakdown(df_imp: pd.DataFrame):
+    """
+    从 SHAP 重要性表中筛出「连通性特征组」的行（按 importance 排序），
+    并返回该组 contribution_pct 累计占比。
+    """
+    from feature_engineering import is_connectivity_feature
+
+    if df_imp is None or df_imp.empty or "feature" not in df_imp.columns:
+        return pd.DataFrame(), 0.0
+    sub = df_imp[df_imp["feature"].map(lambda n: is_connectivity_feature(str(n)))].copy()
+    if sub.empty:
+        return sub, 0.0
+    sub = sub.sort_values("importance", ascending=False)
+    pct_col = "contribution_pct" if "contribution_pct" in sub.columns else None
+    cum = float(sub[pct_col].sum()) if pct_col else 0.0
+    return sub, cum
 
 
 def shap_feature_importance(
@@ -137,6 +170,7 @@ def explain_xgboost(
     emphasize_first: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """加载 XGBoost 模型与数据，输出 SHAP 特征重要性表与可选图。"""
+    explain_cfg, logger = _runtime_cfg()
     try:
         from .infer import load_xgboost_model
     except ImportError:
@@ -154,6 +188,25 @@ def explain_xgboost(
         out_plot_path=out_plot,
         emphasize_first=emphasize_first,
     )
+    if out_dir and bool(explain_cfg.get("export_shap_csv", True)):
+        csv_out = export_table(df_imp, out_dir, "shap_top_features")
+        df_imp.attrs["csv_path"] = csv_out
+        logger.info("SHAP 表已导出：%s", csv_out)
+        if not df_imp.empty:
+            top_name = str(df_imp.iloc[0]["feature"])
+            dep_path = os.path.join(out_dir, f"shap_dependence_{top_name}.png")
+            try:
+                top_idx = list(names).index(top_name)
+                shap_dependence_plot(
+                    model,
+                    X,
+                    feature_names=names,
+                    top_feature_index=top_idx,
+                    save_path=dep_path,
+                )
+                df_imp.attrs["dependence_plot"] = dep_path
+            except Exception as e:
+                logger.warning("SHAP dependence 图生成失败：%s", e)
     return df_imp
 
 

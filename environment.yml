@@ -1,0 +1,28 @@
+name: fracture-connectivity
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - geopandas=1.0.*
+  - matplotlib=3.9.*
+  - scipy=1.14.*
+  - pandas=2.2.*
+  - numpy=1.26.*
+  - scikit-learn=1.6.*
+  - pyyaml=6.0.*
+  - networkx=3.4.*
+  - pip:
+      - fractopo==0.9.1
+      - PyQt5==5.15.11
+      - xgboost==2.1.4
+      - optuna==4.2.1
+      - shap==0.46.0
+      - umap-learn==0.5.7
+      - torch>=2.4,<2.7
+      - torch-geometric>=2.6,<2.8
+      - python-ternary==1.0.8
+      - powerlaw==1.5
+      - pyshp==2.3.1
+      - scikit-image==0.24.0
+      - opencv-python==4.10.0.84

@@ -37,6 +37,15 @@ from multiscale_features import build_multiscale_pyramid
 from ml.train import train_xgboost_regression
 from ml.explain import shap_feature_importance
 from utils.config_loader import load_config
+from utils.export_utils import (
+    export_spatial_dataframe,
+    enrich_predictions_for_gis,
+    LAYER_PREDICTIONS_XGB,
+    export_table,
+    build_run_metadata,
+    write_run_manifest,
+)
+from utils.logging_utils import get_logger
 
 
 def run_spatial_topology_fusion_pipeline(
@@ -72,7 +81,16 @@ def run_spatial_topology_fusion_pipeline(
     fe_cfg = cfg.get("feature_engineering", {}) if isinstance(cfg, dict) else {}
     fusion_cfg = cfg.get("fusion", {}) if isinstance(cfg, dict) else {}
     train_cfg = cfg.get("train", {}) if isinstance(cfg, dict) else {}
+    explain_cfg = cfg.get("explain", {}) if isinstance(cfg, dict) else {}
+    log_cfg = cfg.get("logging", {}) if isinstance(cfg, dict) else {}
     high_value_attrs: Optional[List[str]] = cfg.get("high_value_attrs")
+    logger = get_logger(
+        "spatial_topology_framework",
+        level=log_cfg.get("level", "INFO"),
+        log_file=os.path.join(os.path.dirname(os.path.abspath(csv_path)), log_cfg.get("file", "logs/pipeline.log")),
+    )
+    if not target_column:
+        target_column = train_cfg.get("target_column")
 
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "data", "processed")
@@ -96,6 +114,7 @@ def run_spatial_topology_fusion_pipeline(
 
     if y is None:
         raise ValueError("run_spatial_topology_fusion_pipeline 需要提供有效的 target_column。")
+    logger.info("空间-拓扑融合启动：csv=%s target=%s samples=%s", csv_path, target_column, len(df))
 
     # 网格行列数：集中计算一次，供多尺度金字塔和 build_grid_graph 共用，
     # 避免两处独立 sqrt 因非完全平方数产生不一致的 n_rows/n_cols。
@@ -207,6 +226,7 @@ def run_spatial_topology_fusion_pipeline(
     xgb_result = train_xgboost_regression(
         X,
         y,
+        df_meta=df,
         n_splits=int(train_cfg.get("n_splits", 5)),
         test_size=float(train_cfg.get("test_size", 0.1)),
         random_state=int(train_cfg.get("random_state", 42)),
@@ -223,6 +243,10 @@ def run_spatial_topology_fusion_pipeline(
         y_pred_all = None
     if y_pred_all is not None and len(y_pred_all) == len(df):
         df["xgb_pred"] = y_pred_all
+        sigma = float((xgb_result.get("prediction_interval") or {}).get("sigma", 1.96))
+        resid_std = float((xgb_result.get("prediction_interval") or {}).get("residual_std", 0.0))
+        df["xgb_pred_lower"] = df["xgb_pred"] - sigma * resid_std
+        df["xgb_pred_upper"] = df["xgb_pred"] + sigma * resid_std
 
     # 5. SHAP 解释：特征贡献度
     shap_df = None
@@ -235,11 +259,41 @@ def run_spatial_topology_fusion_pipeline(
                 is_tree=True,
                 out_plot_path=os.path.join(out_dir, "shap_summary.png"),
             )
+            if bool(explain_cfg.get("export_shap_csv", True)):
+                shap_csv = export_table(shap_df, out_dir, "shap_top_features")
+                shap_df.attrs["csv_path"] = shap_csv
         except Exception as e:
             shap_df = pd.DataFrame(
                 {"feature": feature_names, "importance": 0.0, "contribution_pct": 0.0}
             )
             shap_df.attrs["error"] = f"SHAP 计算失败: {e}"
+
+    run_meta = build_run_metadata(
+        config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+        extra={"target_column": target_column},
+    )
+    df_export = enrich_predictions_for_gis(df, pred_col_preferred="xgb_pred")
+    df_export["processing_run_id"] = run_meta.get("processing_run_id", "")
+    df_export["run_timestamp_utc"] = run_meta.get("run_timestamp_utc", "")
+    df_export["config_hash_sha256"] = run_meta.get("config_hash_sha256", "")
+    export_paths = export_spatial_dataframe(
+        df_export,
+        out_dir,
+        "spatial_topology_pipeline_results",
+        export_csv=bool(train_cfg.get("export_predictions_csv", True)),
+        export_gpkg=bool(train_cfg.get("export_predictions_gpkg", True)),
+        layer_name=LAYER_PREDICTIONS_XGB,
+    )
+    manifest_path = write_run_manifest(
+        out_dir,
+        run_id=str(run_meta.get("processing_run_id", "")) or None,
+        kind="pipeline",
+        config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+        artifacts={"csv": export_paths.get("csv"), "gpkg": export_paths.get("gpkg"), "shap_csv": shap_df.attrs.get("csv_path") if shap_df is not None else None},
+        extra={"target_column": target_column},
+    )
+    export_paths["manifest"] = manifest_path
+    logger.info("空间-拓扑融合结束：csv=%s gpkg=%s", export_paths.get("csv"), export_paths.get("gpkg"))
 
     return {
         "df": df,
@@ -249,6 +303,7 @@ def run_spatial_topology_fusion_pipeline(
         "gat_metrics": gat_metrics,
         "gnn_metrics": gnn_metrics,
         "adaptive_weights_mean": adaptive_weights_mean,
+        "export_paths": export_paths,
     }
 
 

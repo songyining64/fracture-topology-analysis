@@ -7,6 +7,8 @@ import os
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Optional, Dict
+from utils.config_loader import load_config
+from utils.logging_utils import get_logger
 
 # 高价值属性（油气领域专家规则：连通率等赋更高权重）
 HIGH_VALUE_ATTRS = [
@@ -14,6 +16,19 @@ HIGH_VALUE_ATTRS = [
 ]
 # 默认高价值权重（其余基础属性权重 1.0）
 DEFAULT_HIGH_VALUE_WEIGHT = 1.5
+
+
+def _runtime_cfg():
+    cfg = load_config()
+    fusion_cfg = (cfg.get("fusion") or {}) if isinstance(cfg, dict) else {}
+    high_value_attrs = cfg.get("high_value_attrs") if isinstance(cfg, dict) else None
+    log_cfg = (cfg.get("logging") or {}) if isinstance(cfg, dict) else {}
+    logger = get_logger(
+        "fusion_algorithm",
+        level=log_cfg.get("level", "INFO"),
+        log_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), log_cfg.get("file", "logs/pipeline.log")),
+    )
+    return fusion_cfg, high_value_attrs, logger
 
 
 def _validate_feature_alignment(X: np.ndarray, feature_names: List[str]) -> None:
@@ -242,8 +257,8 @@ def gat_fusion(
 def run_fusion_comparison_experiment(
     csv_path: str,
     out_dir: Optional[str] = None,
-    high_value_weight: float = DEFAULT_HIGH_VALUE_WEIGHT,
-    gat_epochs: int = 80,
+    high_value_weight: Optional[float] = None,
+    gat_epochs: Optional[int] = None,
     save_boxplot: bool = True,
 ) -> Dict:
     """
@@ -251,14 +266,19 @@ def run_fusion_comparison_experiment(
     返回 dict：weighted_scores, gat_scores, df_with_both, boxplot_path。
     """
     from feature_engineering import build_feature_matrix, DEFAULT_FEATURE_COLUMNS
+    fusion_cfg, high_value_attrs, logger = _runtime_cfg()
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "data", "processed")
     os.makedirs(out_dir, exist_ok=True)
+    if high_value_weight is None:
+        high_value_weight = float(fusion_cfg.get("high_value_weight", DEFAULT_HIGH_VALUE_WEIGHT))
+    if gat_epochs is None:
+        gat_epochs = int(fusion_cfg.get("gat_epochs", 80))
     r = build_feature_matrix(csv_path, feature_columns=DEFAULT_FEATURE_COLUMNS, out_processed_dir=None)
     X, names = r["X"], r["feature_names"]
     n = X.shape[0]
     # 加权融合
-    weighted_scores = weighted_fusion(X, names, high_value_weight=high_value_weight)
+    weighted_scores = weighted_fusion(X, names, high_value_weight=high_value_weight, high_value_attrs=high_value_attrs)
     # 网格图 + GAT
     edge_index, _ = build_grid_graph(n_nodes=n)
     gat_import_error = False
@@ -306,6 +326,7 @@ def run_fusion_comparison_experiment(
             )
         except Exception:
             pass
+    logger.info("融合对比完成：csv=%s boxplot=%s", csv_path, boxplot_path)
     return {
         "weighted_scores": weighted_scores,
         "gat_scores": gat_scores,
@@ -320,21 +341,25 @@ def run_fusion_comparison_experiment(
 def run_weighted_fusion_pipeline(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
-    high_value_weight: float = DEFAULT_HIGH_VALUE_WEIGHT,
+    high_value_weight: Optional[float] = None,
     out_dir: Optional[str] = None,
 ) -> pd.DataFrame:
     """从 CSV 到加权融合得分的完整流程（依赖 feature_engineering）。"""
     from feature_engineering import build_feature_matrix, DEFAULT_FEATURE_COLUMNS
+    fusion_cfg, high_value_attrs, logger = _runtime_cfg()
     if feature_columns is None:
         feature_columns = DEFAULT_FEATURE_COLUMNS
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), "data", "processed")
+    if high_value_weight is None:
+        high_value_weight = float(fusion_cfg.get("high_value_weight", DEFAULT_HIGH_VALUE_WEIGHT))
     out_processed = out_dir
     r = build_feature_matrix(csv_path, out_processed_dir=out_processed, feature_columns=feature_columns)
     X, names = r["X"], r["feature_names"]
-    score = weighted_fusion(X, names, high_value_weight=high_value_weight)
+    score = weighted_fusion(X, names, high_value_weight=high_value_weight, high_value_attrs=high_value_attrs)
     df = r["df"].copy()
     df["weighted_fusion_score"] = score
+    logger.info("加权融合完成：csv=%s rows=%s", csv_path, len(df))
     return df
 
 

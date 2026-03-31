@@ -2,7 +2,12 @@
 import sys
 import os
 import math
+import json
+import time
+import subprocess
+import platform
 import warnings
+from typing import Optional, List, Dict, Any
 
 # 保证 program 目录在 path 中，便于从项目根或 program/ 运行时的导入
 _PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +57,8 @@ from matplotlib import cm as mpl_cm
 
 from utils.matplotlib_chinese import setup_matplotlib_chinese
 from utils.crs_metric import unify_traces_area_crs, reproject_to_metric_crs
+from utils.config_loader import load_config
+from utils.config_validation import validate_config
 
 setup_matplotlib_chinese()
 
@@ -85,12 +92,26 @@ try:
         run_fusion_pipeline_ae,
         run_fusion_pipeline_umap,
         run_fusion_pipeline_vae,
+        export_cluster_results,
+        build_cluster_name_map,
+        attach_cluster_names,
+        compute_cluster_quality_metrics,
+        compute_cluster_stability_ari,
+        build_cluster_summary_rows,
+        CONNECTIVITY_FEATURE_COLUMNS as _TF_CONN_COLS,
     )
 except ImportError:
     run_fusion_pipeline = None
     run_fusion_pipeline_ae = None
     run_fusion_pipeline_umap = None
     run_fusion_pipeline_vae = None
+    export_cluster_results = None
+    build_cluster_name_map = None  # type: ignore
+    attach_cluster_names = None  # type: ignore
+    compute_cluster_quality_metrics = None  # type: ignore
+    compute_cluster_stability_ari = None  # type: ignore
+    build_cluster_summary_rows = None  # type: ignore
+    _TF_CONN_COLS = tuple()
 
 try:
     import torch as _torch
@@ -178,6 +199,13 @@ EMPTY_CROP_MSG = (
     "裁剪后迹线为空：迹线与当前研究区多边形无空间重叠，或数据/坐标系不匹配。\n\n"
     "请检查：① 迹线 GeoJSON 与研究区是否属同一工区；② 在 QGIS 中二者是否相交；③ 导出时统一坐标系。"
 )
+
+
+def _cfg_section(name: str) -> dict:
+    cfg = load_config()
+    if isinstance(cfg, dict):
+        return cfg.get(name, {}) or {}
+    return {}
 
 
 def try_network(*args, **kwargs):
@@ -310,6 +338,24 @@ class StreamRedirector(QtCore.QObject):
         pass
 
 
+class TaskRunner(QtCore.QThread):
+    finished_ok = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            out = self._fn(*self._args, **self._kwargs)
+            self.finished_ok.emit(out)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 def _make_latent_fusion_cmap_norm(n_k: int):
     """潜空间聚类图：柔和离散色 + BoundaryNorm；配色与分区底图、散点一致。"""
     base = np.array(
@@ -339,6 +385,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self, parent=None):
         super(MainWindow, self).__init__(parent)
         self.setupUi(self)
+        self._last_exports = {}
 
         # 1. 开启终端输出智能重定向（带降噪滤镜）
         self.stdout_redirector = StreamRedirector(is_error=False)
@@ -362,7 +409,23 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # 1.6 绑定数据源切换
         self.combo_data_source.currentIndexChanged.connect(self._on_data_source_changed)
+        cc = _cfg_section("clustering")
+        ex = _cfg_section("export_grid")
+        self.spin_kmeans_k.setValue(int(cc.get("n_clusters", 4)))
+        self.dspin_grid_step.setValue(float(ex.get("cell_width", 750.0)))
+        self._refresh_target_suggestions()
         self._refresh_shap_feature_combo()
+        self._refresh_config_summary()
+        self._check_config_on_startup()
+        QtCore.QTimer.singleShot(240, self._show_startup_flow_guide)
+        self.combo_train_target.currentTextChanged.connect(lambda *_: self._refresh_config_summary())
+        self.spin_kmeans_k.valueChanged.connect(lambda *_: self._refresh_config_summary())
+        self.dspin_grid_step.valueChanged.connect(lambda *_: self._refresh_config_summary())
+        self.btn_open_model_dir.clicked.connect(lambda: self._open_program_subdir("model"))
+        self.btn_open_processed_dir.clicked.connect(lambda: self._open_program_subdir(os.path.join("data", "processed")))
+        self.btn_cancel_task.clicked.connect(self.cancel_running_task)
+        self.btn_cancel_task.setEnabled(False)
+        self._running_task = None
 
         # 2. 绑定第一排：基础地质与拓扑绘图
         self.btn_yuantu.clicked.connect(self.run_yuantu)
@@ -385,9 +448,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.btn_ronghe.clicked.connect(self.run_ronghe)
         self.btn_guoji_weighted.clicked.connect(self.run_guoji_weighted_fusion)
         self.btn_guoji_compare.clicked.connect(self.run_guoji_fusion_compare)
+        self.btn_k_helper.clicked.connect(self.run_cluster_k_helper)
         self.btn_guoji_train.clicked.connect(self.run_guoji_train)
         self.btn_guoji_shap.clicked.connect(self.run_guoji_shap)
         self.btn_spatial.clicked.connect(self.run_spatial_topology_framework)
+        self.btn_export_results.clicked.connect(self.show_export_results)
 
         self.opt = 0
         print("油气区断裂网络连通性智能分析与预测系统 — 初始化完成")
@@ -403,6 +468,235 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         if is_at_bottom:
             scrollbar.setValue(scrollbar.maximum())
+
+    def _refresh_config_summary(self):
+        train_cfg = _cfg_section("train")
+        clustering_cfg = _cfg_section("clustering")
+        export_cfg = _cfg_section("export_grid")
+        idx = self.combo_data_source.currentIndex()
+        if 0 <= idx < len(DATA_SOURCES):
+            csv_name = DATA_SOURCES[idx]["csv"]
+        else:
+            csv_name = "Yingmai 2 area in Tarim Basin.csv"
+        gui_k = int(self.spin_kmeans_k.value()) if hasattr(self, "spin_kmeans_k") else int(clustering_cfg.get("n_clusters", 4))
+        gui_cell = float(self.dspin_grid_step.value()) if hasattr(self, "dspin_grid_step") else float(export_cfg.get("cell_width", 750.0))
+        gui_target = self.combo_train_target.currentText().strip() if hasattr(self, "combo_train_target") else ""
+        if not gui_target:
+            gui_target = str(train_cfg.get("target_column", "Fracture Intensity B21"))
+        text = [
+            "工区: 塔里木盆地英买2 (MY)",
+            f"CSV: {csv_name}",
+            f"KMeans k（本次 GUI）: {gui_k}  |  config 默认: {clustering_cfg.get('n_clusters', 4)}",
+            f"训练目标列（本次 GUI）: {gui_target}",
+            f"网格步长（本次 GUI）: {gui_cell:.1f} m  |  config: {export_cfg.get('cell_width', 750.0)} m",
+            f"随机种子(训练): {train_cfg.get('random_state', 42)}",
+            f"随机种子(聚类): {clustering_cfg.get('random_state', 42)}",
+            f"模型状态: {'已找到 xgboost_reg.json' if self._model_exists() else '未训练'}",
+        ]
+        self.config_summary_browser.setPlainText("\n".join(text))
+        self._refresh_prerequisite_buttons()
+
+    def _remember_exports(self, category: str, **paths):
+        clean = {k: self._relpath_for_ui(v) for k, v in paths.items() if v}
+        if clean:
+            self._last_exports[category] = clean
+
+    def _relpath_for_ui(self, value):
+        if not value or not isinstance(value, str):
+            return value
+        if "://" in value:
+            return value
+        try:
+            abs_v = os.path.abspath(value)
+            project_root = os.path.dirname(_PROGRAM_DIR)
+            if abs_v.startswith(project_root):
+                return os.path.relpath(abs_v, project_root)
+        except Exception:
+            return value
+        return value
+
+    def _model_exists(self) -> bool:
+        p = os.path.join(_PROGRAM_DIR, "model", "xgboost_reg.json")
+        return os.path.isfile(p)
+
+    def _csv_path_silent(self) -> Optional[str]:
+        idx = self.combo_data_source.currentIndex()
+        csv_name = DATA_SOURCES[idx]["csv"] if 0 <= idx < len(DATA_SOURCES) else "Yingmai 2 area in Tarim Basin.csv"
+        csv_path = os.path.join(_PROGRAM_DIR, csv_name)
+        return csv_path if os.path.isfile(csv_path) else None
+
+    def _refresh_prerequisite_buttons(self):
+        csv_ok = self._csv_path_silent() is not None
+        model_ok = self._model_exists()
+        if hasattr(self, "btn_guoji_train"):
+            self.btn_guoji_train.setEnabled(csv_ok)
+        if hasattr(self, "btn_ronghe"):
+            self.btn_ronghe.setEnabled(csv_ok)
+        if hasattr(self, "btn_guoji_weighted"):
+            self.btn_guoji_weighted.setEnabled(csv_ok)
+        if hasattr(self, "btn_guoji_compare"):
+            self.btn_guoji_compare.setEnabled(csv_ok)
+        if hasattr(self, "btn_k_helper"):
+            self.btn_k_helper.setEnabled(csv_ok)
+        if hasattr(self, "btn_spatial"):
+            self.btn_spatial.setEnabled(csv_ok)
+        if hasattr(self, "btn_guoji_shap"):
+            self.btn_guoji_shap.setEnabled(csv_ok and model_ok)
+
+    def _refresh_wizard_status(self):
+        if not hasattr(self, "wizard_browser"):
+            return
+        csv_ok = self._csv_path_silent() is not None
+        model_ok = self._model_exists()
+        shp = os.path.join(_PROGRAM_DIR, "model", "shap_summary.png")
+        shap_ok = os.path.isfile(shp)
+        def mark(ok: bool) -> str:
+            return "✓" if ok else "□"
+        lines = [
+            f"{mark(csv_ok)} 第1步：网格 CSV 就绪",
+            f"{mark(model_ok)} 第2步：模型训练完成",
+            f"{mark(shap_ok)} 第3步：SHAP 解释完成",
+        ]
+        self.wizard_browser.setPlainText("\n".join(lines))
+
+    def _show_startup_flow_guide(self):
+        QMessageBox.information(
+            self,
+            "使用流程提示",
+            "推荐流程：\n"
+            "1) 先确认网格 CSV（必要时先运行 export_grid_csv.py）\n"
+            "2) 执行属性融合或直接训练 XGBoost\n"
+            "3) 运行 SHAP 可解释分析\n\n"
+            "补充：\n"
+            "- 可先点「选k辅助」确定聚类 k\n"
+            "- 长任务可点「取消任务」中止",
+        )
+
+    def _set_busy(self, busy: bool, msg: str = ""):
+        if hasattr(self, "btn_cancel_task"):
+            self.btn_cancel_task.setEnabled(bool(busy))
+        if msg:
+            self.statusBar().showMessage(msg)
+        else:
+            self.statusBar().clearMessage()
+
+    def cancel_running_task(self):
+        t = getattr(self, "_running_task", None)
+        if t is None:
+            return
+        try:
+            t.terminate()
+            t.wait(1500)
+        except Exception:
+            pass
+        self._running_task = None
+        self._set_busy(False)
+        QMessageBox.information(self, "已取消", "后台任务已取消。")
+
+    def _friendly_error_message(self, action: str, err_text: str) -> str:
+        s = str(err_text or "")
+        hint = "建议：查看左侧日志并核对输入数据路径。"
+        low = s.lower()
+        if "permission" in low or "operation not permitted" in low:
+            hint = "建议：检查目录写权限，或将输出目录改到可写位置。"
+        elif "no such file" in low or "not found" in low:
+            hint = "建议：确认 CSV/模型文件路径存在，先完成上一步流程。"
+        elif "driver" in low or "gpkg" in low:
+            hint = "建议：检查 geopandas/fiona 驱动，先仅导出 CSV 验证数据。"
+        elif "missing" in low or "缺少" in s or "列" in s:
+            hint = "建议：检查输入 CSV 列名与配置 target_column。"
+        return f"{action}失败：\n{s}\n\n{hint}"
+
+    def _check_config_on_startup(self):
+        cfg = load_config()
+        errs = validate_config(cfg if isinstance(cfg, dict) else {})
+        if not errs:
+            return
+        msg = "检测到配置问题：\n- " + "\n- ".join(errs[:8])
+        if len(errs) > 8:
+            msg += f"\n... 其余 {len(errs)-8} 条省略"
+        msg += "\n\n请修正 program/config.yaml 后重启，或继续运行但可能在中途报错。"
+        QMessageBox.warning(self, "配置校验提醒", msg)
+
+    def _refresh_target_suggestions(self):
+        if not hasattr(self, "combo_train_target"):
+            return
+        csv_path = self._csv_path_silent()
+        train_cfg = _cfg_section("train")
+        default = str(train_cfg.get("target_column", "Fracture Intensity B21"))
+        prev = self.combo_train_target.currentText().strip()
+        self.combo_train_target.blockSignals(True)
+        self.combo_train_target.clear()
+        if csv_path:
+            try:
+                from feature_engineering import suggest_regression_target_columns
+
+                for c in suggest_regression_target_columns(csv_path):
+                    self.combo_train_target.addItem(c)
+            except Exception:
+                pass
+        if self.combo_train_target.findText(default) < 0:
+            self.combo_train_target.insertItem(0, default)
+        if prev and self.combo_train_target.findText(prev) >= 0:
+            self.combo_train_target.setCurrentText(prev)
+        elif prev:
+            self.combo_train_target.setEditText(prev)
+        else:
+            self.combo_train_target.setCurrentText(default)
+        self.combo_train_target.blockSignals(False)
+
+    def _training_target_from_gui(self) -> str:
+        train_cfg = _cfg_section("train")
+        t = self.combo_train_target.currentText().strip() if hasattr(self, "combo_train_target") else ""
+        return t or str(train_cfg.get("target_column", "Fracture Intensity B21"))
+
+    def _open_program_subdir(self, rel: str):
+        path = os.path.abspath(os.path.join(_PROGRAM_DIR, rel))
+        os.makedirs(path, exist_ok=True)
+        if not os.path.isdir(path):
+            QMessageBox.warning(self, "路径无效", path)
+            return
+        try:
+            if platform.system() == "Darwin":
+                subprocess.run(["open", path], check=False)
+            elif platform.system() == "Windows":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", path], check=False)
+        except Exception as e:
+            QMessageBox.warning(self, "无法打开目录", str(e))
+
+    def _update_last_run_card(self, lines: List[str]):
+        if hasattr(self, "last_run_browser"):
+            self.last_run_browser.setPlainText("\n".join(lines).strip())
+
+    def _append_run_history(self, record: Dict[str, Any]):
+        record = {**record, "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+        out_dir = os.path.join(_PROGRAM_DIR, "data", "processed")
+        os.makedirs(out_dir, exist_ok=True)
+        hist_path = os.path.join(out_dir, "gui_run_history.jsonl")
+        try:
+            with open(hist_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            pass
+
+    def show_export_results(self):
+        if not self._last_exports:
+            QMessageBox.information(
+                self,
+                "导出结果",
+                "当前会自动导出聚类 CSV/GPKG、预测结果、SHAP 表等。\n"
+                "请先运行一次融合、训练、SHAP 或一键空间-拓扑融合后再查看最近导出路径。",
+            )
+            return
+        lines = ["最近导出结果：", ""]
+        for category, mapping in self._last_exports.items():
+            lines.append(f"[{category}]")
+            for key, value in mapping.items():
+                lines.append(f"  {key}: {value}")
+            lines.append("")
+        QMessageBox.information(self, "导出结果", "\n".join(lines).rstrip())
 
 
     def embed_figure(self, figs, *, description=None, descriptions=None):
@@ -681,23 +975,25 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def _get_guoji_csv(self):
         """根据当前数据源获取对应的网格 CSV 路径。"""
+        csv_path = self._csv_path_silent()
+        if csv_path:
+            return csv_path
         idx = self.combo_data_source.currentIndex()
-        if 0 <= idx < len(DATA_SOURCES):
-            csv_name = DATA_SOURCES[idx]["csv"]
-        else:
-            csv_name = "Yingmai 2 area in Tarim Basin.csv"
-        csv_path = os.path.join(_PROGRAM_DIR, csv_name)
-        if not os.path.isfile(csv_path):
-            QMessageBox.warning(self, "未找到数据",
-                                f"未找到：{csv_name}\n请先运行 export_grid_csv.py 为该区域生成网格 CSV。")
-            return None
-        return csv_path
+        csv_name = DATA_SOURCES[idx]["csv"] if 0 <= idx < len(DATA_SOURCES) else "Yingmai 2 area in Tarim Basin.csv"
+        QMessageBox.warning(
+            self,
+            "未找到数据",
+            f"未找到：{csv_name}\n请先运行 export_grid_csv.py 为该区域生成网格 CSV。",
+        )
+        return None
 
     def _on_data_source_changed(self, index: int):
         """数据源切换时重新加载迹线与研究区。"""
         if load_data_source(index):
             print(f"已切换数据源：{name}")
             self._refresh_shap_feature_combo()
+            self._refresh_target_suggestions()
+            self._refresh_config_summary()
         else:
             QMessageBox.warning(self, "加载失败",
                                 f"无法加载选中的数据源，请确认 {DATA_SOURCES[index]['traces']} 和 {DATA_SOURCES[index]['area']} 存在。")
@@ -753,7 +1049,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.text_browser.moveCursor(QTextCursor.End)
             QMessageBox.information(self, "完成", "加权融合已运行，结果已显示在左侧文本框。")
         except Exception as e:
-            QMessageBox.critical(self, "运行出错", str(e))
+            QMessageBox.critical(self, "运行出错", self._friendly_error_message("融合对比", str(e)))
 
     def run_guoji_fusion_compare(self):
         try:
@@ -803,15 +1099,96 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             else:
                 QMessageBox.information(self, "完成", "融合对比已运行，箱线图已弹出。")
         except Exception as e:
-            QMessageBox.critical(self, "运行出错", str(e))
+            QMessageBox.critical(self, "运行出错", self._friendly_error_message("训练流程", str(e)))
+
+    def run_cluster_k_helper(self):
+        csv_path = self._get_guoji_csv()
+        if not csv_path:
+            return
+        try:
+            from topology_fusion import load_and_prepare, fuse_with_pca
+            from sklearn.cluster import KMeans
+            from sklearn.metrics import silhouette_score, davies_bouldin_score
+        except ImportError as e:
+            QMessageBox.warning(self, "模块未安装", f"缺少聚类评估依赖：\n{e}")
+            return
+        cfg = _cfg_section("clustering")
+        k_min = int(cfg.get("k_search_min", 2))
+        k_max = int(cfg.get("k_search_max", 12))
+        if k_max <= k_min:
+            k_max = k_min + 1
+        try:
+            _, X_raw, _ = load_and_prepare(csv_path)
+            X2, _, _ = fuse_with_pca(X_raw, n_components=2, standardize=True)
+            rows = []
+            for k in range(k_min, k_max + 1):
+                km = KMeans(n_clusters=k, random_state=int(cfg.get("random_state", 42)), n_init=10)
+                labels = km.fit_predict(X2)
+                inertia = float(km.inertia_)
+                sil = float("nan")
+                dbi = float("nan")
+                if len(np.unique(labels)) >= 2:
+                    sil = float(silhouette_score(X2, labels))
+                    dbi = float(davies_bouldin_score(X2, labels))
+                rows.append({"k": k, "inertia": inertia, "silhouette": sil, "davies_bouldin": dbi})
+            import pandas as pd
+
+            dfm = pd.DataFrame(rows)
+            out_dir = os.path.join(os.path.dirname(csv_path), "data", "processed")
+            os.makedirs(out_dir, exist_ok=True)
+            csv_out = os.path.join(out_dir, "k_selection_metrics.csv")
+            dfm.to_csv(csv_out, index=False)
+            fig, axes = plt.subplots(1, 3, figsize=(12.5, 3.8))
+            axes[0].plot(dfm["k"], dfm["inertia"], marker="o")
+            axes[0].set_title("Elbow (Inertia↓)")
+            axes[0].set_xlabel("k")
+            axes[0].grid(True, alpha=0.3)
+            axes[1].plot(dfm["k"], dfm["silhouette"], marker="o")
+            axes[1].set_title("Silhouette (↑)")
+            axes[1].set_xlabel("k")
+            axes[1].grid(True, alpha=0.3)
+            axes[2].plot(dfm["k"], dfm["davies_bouldin"], marker="o")
+            axes[2].set_title("Davies-Bouldin (↓)")
+            axes[2].set_xlabel("k")
+            axes[2].grid(True, alpha=0.3)
+            plt.tight_layout()
+            self.embed_figure(
+                fig,
+                description="选 k 辅助：左图看肘部拐点（Inertia 越小越好）；中图看 Silhouette（越大越好）；右图看 DBI（越小越好）。",
+            )
+            best_k = int(dfm.loc[dfm["silhouette"].astype(float).idxmax(), "k"]) if dfm["silhouette"].notna().any() else None
+            txt = "【聚类选 k 辅助】\n\n" + dfm.to_string(index=False)
+            if best_k is not None:
+                txt += f"\n\n建议参考 k（按 silhouette 最大）：{best_k}"
+            txt += f"\n指标表导出：{self._relpath_for_ui(csv_out)}"
+            self.text_browser.clear()
+            self.text_browser.insertPlainText(txt)
+            self.text_browser.moveCursor(QTextCursor.End)
+            self._remember_exports("选k辅助", k_metrics_csv=csv_out)
+            self._update_last_run_card(
+                [
+                    "类型：聚类选 k 辅助",
+                    f"k 范围：{k_min}-{k_max}",
+                    f"建议 k：{best_k if best_k is not None else '无'}",
+                    f"导出：{self._relpath_for_ui(csv_out)}",
+                ]
+            )
+            self._append_run_history(
+                {"kind": "cluster_k_helper", "k_min": k_min, "k_max": k_max, "recommended_k": best_k, "csv": csv_out}
+            )
+            QMessageBox.information(self, "完成", f"选 k 指标已生成并导出：\n{self._relpath_for_ui(csv_out)}")
+        except Exception as e:
+            QMessageBox.critical(self, "运行出错", f"选 k 辅助失败：\n{e}")
 
     def run_guoji_train(self):
         import matplotlib.pyplot as plt
+        import pandas as pd
         plt.close('all')  # 强制清空历史残留画板
 
         try:
             from feature_engineering import build_feature_matrix
-            from ml.train import train_xgboost_regression, save_model_report
+            from ml.train import train_xgboost_regression, save_model_report, export_prediction_results
+            from utils.export_utils import export_table, write_run_manifest, build_run_metadata
         except ImportError as e:
             QMessageBox.warning(self, "模块未安装", f"请确保环境可用。\n{e}")
             return
@@ -824,48 +1201,257 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         warnings.filterwarnings("ignore")
 
         try:
-            r = build_feature_matrix(csv_path, out_processed_dir=None)
+            train_cfg = _cfg_section("train")
+            target_col = self._training_target_from_gui()
+            r = build_feature_matrix(csv_path, target_column=target_col, out_processed_dir=None)
             X, y = r["X"], r["y"]
             if y is None:
-                target_col, ok = QInputDialog.getText(
+                target_col2, ok = QInputDialog.getText(
                     self,
                     "请指定目标列",
-                    "未检测到目标列。请输入要预测的列名\n（如 Fracture Intensity B21、Connections per Branch）：",
-                    text="Fracture Intensity B21",
+                    "无法在 CSV 中读取该目标列。请输入列名\n（如 Fracture Intensity B21）：",
+                    text=target_col,
                 )
-                if not ok or not target_col.strip():
+                if not ok or not target_col2.strip():
                     return
-                target_col = target_col.strip()
+                target_col = target_col2.strip()
                 r = build_feature_matrix(csv_path, target_column=target_col, out_processed_dir=None)
                 X, y = r["X"], r["y"]
                 if y is None:
                     QMessageBox.warning(self, "列名无效", f"在 CSV 中未找到列「{target_col}」，请确认列名拼写。")
                     return
 
-            res = train_xgboost_regression(X, y, n_splits=5, test_size=0.1)
+            res = train_xgboost_regression(X, y, df_meta=r.get("df"))
             model_dir = os.path.join(os.path.dirname(csv_path), "model")
             save_model_report(res, model_dir, name="xgboost_reg", feature_names=r.get("feature_names"))
+            baseline_csv = None
+            if res.get("baseline_metrics"):
+                baseline_df = (
+                    pd.DataFrame(res["baseline_metrics"])
+                    .T.reset_index()
+                    .rename(columns={"index": "model"})
+                )
+                baseline_csv = export_table(baseline_df, model_dir, "baseline_metrics")
+            pred_all = res["model"].predict(np.asarray(X))
+            pred_df = r["df"].copy()
+            run_meta = build_run_metadata(config_path=os.path.join(_PROGRAM_DIR, "config.yaml"))
+            pred_df["processing_run_id"] = run_meta.get("processing_run_id", "")
+            pred_df["run_timestamp_utc"] = run_meta.get("run_timestamp_utc", "")
+            pred_df["config_hash_sha256"] = run_meta.get("config_hash_sha256", "")
+            pred_df["prediction_xgboost"] = pred_all
+            if y is not None and len(y) == len(pred_df):
+                pred_df["target_true"] = y
+            interval_info = res.get("prediction_interval") or {}
+            conf_q = float(interval_info.get("conformal_qhat", 0.0) or 0.0)
+            if conf_q > 0:
+                pred_df["prediction_lower"] = pred_df["prediction_xgboost"] - conf_q
+                pred_df["prediction_upper"] = pred_df["prediction_xgboost"] + conf_q
+            else:
+                sigma = float(interval_info.get("sigma", 1.96))
+                resid_std = float(interval_info.get("residual_std", 0.0))
+                pred_df["prediction_lower"] = pred_df["prediction_xgboost"] - sigma * resid_std
+                pred_df["prediction_upper"] = pred_df["prediction_xgboost"] + sigma * resid_std
+            pred_df["prediction_interval_width"] = pred_df["prediction_upper"] - pred_df["prediction_lower"]
+            pred_paths = export_prediction_results(
+                pred_df,
+                model_dir,
+                stem="xgboost_predictions",
+                export_csv=bool(train_cfg.get("export_predictions_csv", True)),
+                export_gpkg=bool(train_cfg.get("export_predictions_gpkg", True)),
+            )
+            self._remember_exports(
+                "训练预测",
+                model=os.path.join(model_dir, "xgboost_reg.json"),
+                report=os.path.join(model_dir, "xgboost_reg_report.json"),
+                baseline_metrics=baseline_csv,
+                pred_csv=pred_paths.get("csv"),
+                pred_gpkg=pred_paths.get("gpkg"),
+            )
+            manifest_path = write_run_manifest(
+                model_dir,
+                run_id=str(run_meta.get("processing_run_id", "")) or None,
+                kind="train",
+                config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+                artifacts={
+                    "model_json": os.path.join(model_dir, "xgboost_reg.json"),
+                    "report_json": os.path.join(model_dir, "xgboost_reg_report.json"),
+                    "prediction_csv": pred_paths.get("csv"),
+                    "prediction_gpkg": pred_paths.get("gpkg"),
+                    "baseline_csv": baseline_csv,
+                },
+                extra={
+                    "target_column": target_col,
+                    "train_samples": int(res.get("n_train", 0)),
+                    "test_samples": int(res.get("n_test", 0)),
+                },
+            )
+            self._remember_exports("训练预测", run_manifest=manifest_path)
 
-            # 抓取训练生成的散点图并嵌入
-            fig = plt.gcf()
+            from ml.explain import shap_feature_importance, connectivity_shap_breakdown
+
+            df_shap_train = shap_feature_importance(
+                res["model"],
+                X,
+                feature_names=r["feature_names"],
+                is_tree=True,
+                out_plot_path=None,
+            )
+            conn_df, conn_cum_pct = connectivity_shap_breakdown(df_shap_train)
+            conn_csv = None
+            if conn_df is not None and not conn_df.empty:
+                conn_csv = export_table(conn_df, model_dir, "shap_connectivity_features")
+
+            names_zh: List[str] = []
+            r2s: List[float] = []
+            if res.get("baseline_metrics") and "linear_regression" in res["baseline_metrics"]:
+                names_zh.append("线性回归")
+                r2s.append(float(res["baseline_metrics"]["linear_regression"].get("R2", float("nan"))))
+            if res.get("baseline_metrics") and "random_forest" in res["baseline_metrics"]:
+                names_zh.append("随机森林")
+                r2s.append(float(res["baseline_metrics"]["random_forest"].get("R2", float("nan"))))
+            names_zh.append("XGBoost")
+            r2s.append(float(res["test_metrics"]["R2"]))
+            fig_m, axes = plt.subplots(1, 3, figsize=(13.2, 4.0))
+            xpos = np.arange(len(names_zh))
+            cols_bar = ["#7eb6df", "#90c98a", "#e89c5c", "#c49fd4"]
+            axes[0].bar(xpos, r2s, color=cols_bar[: len(r2s)])
+            axes[0].set_xticks(xpos)
+            axes[0].set_xticklabels(names_zh, rotation=14, ha="right")
+            axes[0].set_ylabel("测试集 R²")
+            axes[0].set_title("模型对比（留出测试集）")
+            axes[0].grid(True, axis="y", alpha=0.35)
+            y_te = np.asarray(res["y_test"], dtype=np.float64)
+            pred_te = np.asarray(res["test_predictions"], dtype=np.float64)
+            axes[1].scatter(y_te, pred_te, s=18, alpha=0.68, c="#3498db", edgecolors="none")
+            lo = float(min(y_te.min(), pred_te.min()))
+            hi = float(max(y_te.max(), pred_te.max()))
+            axes[1].plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.55)
+            axes[1].set_xlabel("真实值")
+            axes[1].set_ylabel("预测值")
+            axes[1].set_title("测试集：预测 vs 真实")
+            resid = y_te - pred_te
+            axes[2].scatter(pred_te, resid, s=18, alpha=0.68, c="#9b59b6", edgecolors="none")
+            axes[2].axhline(0.0, color="k", lw=1, alpha=0.5)
+            axes[2].set_xlabel("预测值")
+            axes[2].set_ylabel("残差（真−预）")
+            axes[2].set_title("测试集残差")
+            plt.tight_layout()
             self.embed_figure(
-                [fig],
+                fig_m,
                 description=(
-                    "XGBoost 训练过程输出的诊断图（具体子图以程序为准）：通常含训练/交叉验证相关的"
-                    "预测效果或残差示意，用于快速判断拟合是否正常；详细数值见左侧文本与 model 目录报告。"
+                    "左：线性回归、随机森林与 XGBoost 在同一测试集上的 R²；中：预测–真值散点（对角线为理想）；"
+                    "右：残差对预测值，用于发现系统性偏差。"
                 ),
             )
-            plt.close('all')
 
             txt = "【XGBoost 训练结果】\n\n"
+            txt += f"目标列：{target_col}\n\n"
             txt += f"CV R² 均值：{res['cv_agg']['R2_mean']:.4f}\n"
+            if "R2_std" in res["cv_agg"]:
+                txt += f"CV R² 标准差：{res['cv_agg']['R2_std']:.4f}\n"
+            if "RMSE_std" in res["cv_agg"]:
+                txt += f"CV RMSE 标准差：{res['cv_agg']['RMSE_std']:.4f}\n"
             txt += f"测试集 R²：{res['test_metrics']['R2']:.4f}\n"
-            txt += f"\n模型已保存：{model_dir}/xgboost_reg.json"
+            stab = res.get("seed_stability")
+            if stab:
+                txt += (
+                    f"\n随机种子稳定性（仅测试集重新划分评估）："
+                    f"R² 均值 {stab['test_R2_mean']:.4f}，标准差 {stab['test_R2_std']:.4f}，"
+                    f"seeds={stab.get('seeds')}\n"
+                )
+            if res.get("baseline_metrics"):
+                txt += "\n基线模型对比（测试集）：\n"
+                for model_name, metrics in res["baseline_metrics"].items():
+                    txt += (
+                        f"  - {model_name}: "
+                        f"R²={metrics.get('R2', float('nan')):.4f}, "
+                        f"RMSE={metrics.get('RMSE', float('nan')):.4f}\n"
+                    )
+            txt += "\n【连通性特征组 · SHAP】\n"
+            txt += "（Connections per Branch/Trace、Connection Frequency 若未通过特征筛选则不会出现在表中）\n"
+            if conn_df is not None and not conn_df.empty:
+                txt += conn_df.to_string(index=False) + "\n"
+                txt += f"\n连通性特征累计贡献占比（按 mean|SHAP| 归一）：{conn_cum_pct:.2f}%\n"
+            else:
+                txt += "（当前特征子集内无连通性列或未进入模型。）\n"
+            if conn_csv:
+                txt += f"连通性 SHAP 子表：{conn_csv}\n"
+            if res.get("prediction_interval"):
+                cov = float((res["prediction_interval"] or {}).get("conformal_test_coverage", 0.0))
+                qhat = float((res["prediction_interval"] or {}).get("conformal_qhat", 0.0))
+                txt += (
+                    f"\n不确定性摘要：split-conformal α={res['prediction_interval'].get('conformal_alpha', 0.1):.2f}，"
+                    f"q̂={qhat:.4f}，测试覆盖率={cov:.2%}\n"
+                )
+                txt += (
+                    f"（回退统计）±{res['prediction_interval']['sigma']:.2f}σ，"
+                    f"残差标准差={res['prediction_interval']['residual_std']:.4f}\n"
+                )
+            spcv = res.get("spatial_cv_agg")
+            if spcv:
+                txt += (
+                    f"\n空间 Block-CV：R² 均值={spcv.get('R2_mean', float('nan')):.4f}，"
+                    f"标准差={spcv.get('R2_std', float('nan')):.4f}，"
+                    f"blocks={spcv.get('n_blocks_used', 'NA')}\n"
+                )
+            txt += f"\n模型已保存：{self._relpath_for_ui(os.path.join(model_dir, 'xgboost_reg.json'))}"
+            if baseline_csv:
+                txt += f"\n基线对比表：{baseline_csv}"
+            txt += f"\n预测导出 CSV：{self._relpath_for_ui(pred_paths.get('csv'))}"
+            if pred_paths.get("gpkg"):
+                txt += f"\n预测导出 GPKG（图层 predictions_xgb）：{self._relpath_for_ui(pred_paths.get('gpkg'))}"
+            txt += f"\n运行清单：{self._relpath_for_ui(manifest_path)}"
 
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
             self.text_browser.moveCursor(QtGui.QTextCursor.End)
-            QMessageBox.information(self, "完成", "训练完成，图表已刷新。")
+            self._refresh_prerequisite_buttons()
+            self._refresh_config_summary()
+            best_line = ""
+            if res.get("baseline_metrics"):
+                ranked = sorted(
+                    res["baseline_metrics"].items(),
+                    key=lambda kv: kv[1].get("R2", float("-inf")),
+                    reverse=True,
+                )
+                if ranked:
+                    best_line = (
+                        f"\n最佳基线：{ranked[0][0]} "
+                        f"(R²={ranked[0][1].get('R2', float('nan')):.4f})"
+                    )
+            card_lines = [
+                f"类型：XGBoost 训练",
+                f"目标列：{target_col}",
+                f"测试 R²：{res['test_metrics']['R2']:.4f}",
+            ]
+            if stab:
+                card_lines.append(f"多种子 R²：{stab['test_R2_mean']:.4f} ± {stab['test_R2_std']:.4f}")
+            card_lines.append(f"预测导出：{self._relpath_for_ui(pred_paths.get('csv', ''))}")
+            if res.get("prediction_interval"):
+                card_lines.append(
+                    f"conformal 覆盖率：{float((res['prediction_interval'] or {}).get('conformal_test_coverage', 0.0)):.2%}"
+                )
+            if conn_df is not None and not conn_df.empty:
+                card_lines.append(f"连通性 SHAP 累计占比：{conn_cum_pct:.1f}%")
+            self._update_last_run_card(card_lines)
+            self._append_run_history(
+                {
+                    "kind": "train",
+                    "target": target_col,
+                    "test_R2": res["test_metrics"]["R2"],
+                    "pred_csv": pred_paths.get("csv"),
+                    "connectivity_shap_pct": conn_cum_pct,
+                    "conformal_coverage_test": float((res.get("prediction_interval") or {}).get("conformal_test_coverage", 0.0)),
+                }
+            )
+            QMessageBox.information(
+                self,
+                "完成",
+                "训练完成，图表已刷新。"
+                f"\n预测 CSV：{self._relpath_for_ui(pred_paths.get('csv', '未导出'))}"
+                f"\n预测 GPKG：{self._relpath_for_ui(pred_paths.get('gpkg', '未导出'))}"
+                f"{best_line}",
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "运行出错", str(e))
@@ -903,11 +1489,23 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 model_path, csv_path, out_dir=out_dir, emphasize_first=emph
             )
 
+            from ml.explain import connectivity_shap_breakdown
+
+            conn_sub, conn_cum = connectivity_shap_breakdown(df_imp)
             txt = "【XGBoost SHAP 特征贡献分析】\n\n"
             if emph:
                 txt += f"关注特征（图中置顶）：{emph[0]}\n\n"
             txt += df_imp.head(10).to_string()
-            txt += f"\n\n（summary 图已保存至 {out_dir}/shap_summary.png）"
+            txt += "\n\n【连通性特征组 · SHAP】\n"
+            if conn_sub is not None and not conn_sub.empty:
+                txt += conn_sub.to_string(index=False) + f"\n累计贡献占比：{conn_cum:.2f}%\n"
+            else:
+                txt += "（当前模型特征中未包含连通性列。）\n"
+            txt += f"\n\n（summary 图已保存至 {self._relpath_for_ui(os.path.join(out_dir, 'shap_summary.png'))}）"
+            if df_imp.attrs.get("csv_path"):
+                txt += f"\nSHAP 特征表导出（shap_top_features.csv）：{self._relpath_for_ui(df_imp.attrs['csv_path'])}"
+            if df_imp.attrs.get("dependence_plot"):
+                txt += f"\n关键特征 dependence 图：{self._relpath_for_ui(df_imp.attrs['dependence_plot'])}"
 
             self.text_browser.clear()
             self.text_browser.insertPlainText(txt)
@@ -927,96 +1525,145 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                         "点色表示该样本上特征取值高低。可据此判断哪些拓扑/融合属性最能驱动当前目标列预测。"
                     ),
                 )
+            self._remember_exports(
+                "SHAP",
+                shap_png=shap_png if os.path.isfile(shap_png) else None,
+                shap_csv=df_imp.attrs.get("csv_path"),
+                dependence_png=df_imp.attrs.get("dependence_plot"),
+            )
 
             plt.close('all')
-            QMessageBox.information(self, "完成", "SHAP 分析已成功运行，特征图已在右侧显示！")
+            QMessageBox.information(
+                self,
+                "完成",
+                "SHAP 分析已成功运行，特征图已在右侧显示！"
+                f"\nSHAP 表（文件名多为 shap_top_features.csv）：{self._relpath_for_ui(df_imp.attrs.get('csv_path', '未导出'))}"
+                f"\nDependence 图：{self._relpath_for_ui(df_imp.attrs.get('dependence_plot', '未生成'))}",
+            )
 
         except Exception as e:
-            QMessageBox.critical(self, "SHAP 运行遇到小麻烦",
-                                 f"底层分析失败。建议先点击【训练 XGBoost】重新对齐数据再试。\n报错详情：{str(e)}")
+            QMessageBox.critical(
+                self,
+                "SHAP 运行遇到小麻烦",
+                self._friendly_error_message("SHAP 分析", str(e)),
+            )
 
     def run_spatial_topology_framework(self):
-        """一键运行空间-拓扑融合学习框架"""
+        """一键运行空间-拓扑融合学习框架（后台线程，可取消）。"""
         import matplotlib.pyplot as plt
         plt.close('all')
-
-        try:
-            from spatial_topology_framework import run_spatial_topology_fusion_pipeline
-        except ImportError as e:
-            QMessageBox.warning(self, "模块未安装", f"请确保相关模块可用。\n{e}")
-            return
-
         csv_path = self._get_guoji_csv()
         if not csv_path:
             return
-
         target_column, ok = QInputDialog.getText(
             self,
             "目标列名",
             "请输入要预测的目标列（例如 Fracture Intensity B21）：",
-            text="Fracture Intensity B21",
+            text=self._training_target_from_gui(),
         )
         if not ok or not target_column.strip():
             return
         target_column = target_column.strip()
 
-        import warnings
-        warnings.filterwarnings("ignore")
+        def _worker(csv_path_inner: str, target_inner: str):
+            from spatial_topology_framework import run_spatial_topology_fusion_pipeline
+            return run_spatial_topology_fusion_pipeline(csv_path=csv_path_inner, target_column=target_inner)
 
-        try:
-            res = run_spatial_topology_fusion_pipeline(
-                csv_path=csv_path,
-                target_column=target_column,
-            )
+        self._set_busy(True, "一键空间-拓扑融合运行中...")
+        task = TaskRunner(_worker, csv_path, target_column)
+        self._running_task = task
 
-            xgb_res = res.get("xgb_result", {})
-            cv_agg = xgb_res.get("cv_agg", {})
-            test_metrics = xgb_res.get("test_metrics", {})
-            shap_df = res.get("shap_importance")
-
-            out_dir = os.path.join(os.path.dirname(csv_path), "data", "processed")
-            shap_png = os.path.join(out_dir, "shap_summary.png")
-
-            if os.path.isfile(shap_png):
-                fig = plt.figure(figsize=(8, 6))
-                img = plt.imread(shap_png)
-                plt.imshow(img)
-                plt.axis("off")
-                fig.tight_layout()
-                self.embed_figure(
-                    [fig],
-                    description=(
-                        "「一键空间–拓扑融合流水线」结束后的 SHAP 汇总图（若已生成）："
-                        "含义与单独 SHAP 按钮相同，特征重要性针对流水线中指定的目标列。"
-                    ),
+        def _done(res):
+            self._running_task = None
+            self._set_busy(False)
+            try:
+                xgb_res = res.get("xgb_result", {})
+                cv_agg = xgb_res.get("cv_agg", {})
+                test_metrics = xgb_res.get("test_metrics", {})
+                shap_df = res.get("shap_importance")
+                out_dir = os.path.join(os.path.dirname(csv_path), "data", "processed")
+                shap_png = os.path.join(out_dir, "shap_summary.png")
+                if os.path.isfile(shap_png):
+                    fig = plt.figure(figsize=(8, 6))
+                    img = plt.imread(shap_png)
+                    plt.imshow(img)
+                    plt.axis("off")
+                    fig.tight_layout()
+                    self.embed_figure(
+                        [fig],
+                        description=(
+                            "「一键空间–拓扑融合流水线」结束后的 SHAP 汇总图（若已生成）："
+                            "含义与单独 SHAP 按钮相同，特征重要性针对流水线中指定的目标列。"
+                        ),
+                    )
+                plt.close('all')
+                txt = "【空间-拓扑融合分析】\n\n"
+                txt += f"目标列：{target_column}\n"
+                if cv_agg:
+                    txt += "\n交叉验证（CV）指标：\n"
+                    if "R2_mean" in cv_agg:
+                        txt += f"  R² 均值：{cv_agg['R2_mean']:.4f}\n"
+                    if "RMSE_mean" in cv_agg:
+                        txt += f"  RMSE 均值：{cv_agg['RMSE_mean']:.4f}\n"
+                if xgb_res.get("spatial_cv_agg"):
+                    sp = xgb_res["spatial_cv_agg"]
+                    txt += (
+                        f"\n空间 Block-CV：R² 均值={sp.get('R2_mean', float('nan')):.4f}，"
+                        f"标准差={sp.get('R2_std', float('nan')):.4f}\n"
+                    )
+                if test_metrics:
+                    txt += "\n测试集指标：\n"
+                    if "R2" in test_metrics:
+                        txt += f"  R²：{test_metrics['R2']:.4f}\n"
+                if shap_df is not None and not shap_df.empty:
+                    txt += "\nTop 特征贡献（SHAP）：\n"
+                    txt += shap_df.head(8).to_string(index=False)
+                    txt += "\n\n（SHAP 分析图已嵌入右侧画板）"
+                    if shap_df.attrs.get("csv_path"):
+                        txt += f"\nSHAP 表导出：{self._relpath_for_ui(shap_df.attrs['csv_path'])}"
+                export_paths = res.get("export_paths") or {}
+                if export_paths.get("csv"):
+                    txt += f"\n结果导出 CSV：{self._relpath_for_ui(export_paths['csv'])}"
+                if export_paths.get("gpkg"):
+                    txt += f"\n结果导出 GPKG：{self._relpath_for_ui(export_paths['gpkg'])}"
+                if export_paths.get("manifest"):
+                    txt += f"\n运行清单：{self._relpath_for_ui(export_paths['manifest'])}"
+                self._remember_exports(
+                    "一键空间-拓扑融合",
+                    result_csv=export_paths.get("csv"),
+                    result_gpkg=export_paths.get("gpkg"),
+                    run_manifest=export_paths.get("manifest"),
+                    shap_csv=shap_df.attrs.get("csv_path") if shap_df is not None else None,
+                    shap_png=shap_png if os.path.isfile(shap_png) else None,
                 )
+                self.text_browser.clear()
+                self.text_browser.insertPlainText(txt)
+                self.text_browser.moveCursor(QtGui.QTextCursor.End)
+                self._update_last_run_card(
+                    [
+                        "类型：一键空间-拓扑融合",
+                        f"目标列：{target_column}",
+                        f"结果：{self._relpath_for_ui(export_paths.get('csv', ''))}",
+                    ]
+                )
+                QMessageBox.information(
+                    self,
+                    "完成",
+                    "空间-拓扑融合运行完毕"
+                    f"\n结果 CSV：{self._relpath_for_ui(export_paths.get('csv', '未导出'))}"
+                    f"\n结果 GPKG：{self._relpath_for_ui(export_paths.get('gpkg', '未导出'))}",
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "后处理失败", self._friendly_error_message("一键空间-拓扑融合结果渲染", str(e)))
 
-            plt.close('all')
+        def _fail(msg: str):
+            self._running_task = None
+            self._set_busy(False)
+            QMessageBox.critical(self, "运行出错", self._friendly_error_message("一键空间-拓扑融合", msg))
 
-
-            txt = "【空间-拓扑融合分析】\n\n"
-            txt += f"目标列：{target_column}\n"
-            if cv_agg:
-                txt += "\n交叉验证（CV）指标：\n"
-                if "R2_mean" in cv_agg: txt += f"  R² 均值：{cv_agg['R2_mean']:.4f}\n"
-                if "RMSE_mean" in cv_agg: txt += f"  RMSE 均值：{cv_agg['RMSE_mean']:.4f}\n"
-            if test_metrics:
-                txt += "\n测试集指标：\n"
-                if "R2" in test_metrics: txt += f"  R²：{test_metrics['R2']:.4f}\n"
-            if shap_df is not None and not shap_df.empty:
-                txt += "\nTop 特征贡献（SHAP）：\n"
-                txt += shap_df.head(8).to_string(index=False)
-                txt += "\n\n（SHAP 分析图已嵌入右侧画板）"
-
-            self.text_browser.clear()
-            self.text_browser.insertPlainText(txt)
-            self.text_browser.moveCursor(QtGui.QTextCursor.End)
-            QMessageBox.information(self, "完成", "空间-拓扑融合运行完毕")
-
-        except Exception as e:
-            import traceback
-            err_detail = traceback.format_exc()
-            QMessageBox.critical(self, "运行出错", f"{str(e)}\n\n详细报错：\n{err_detail[-500:]}")
+        task.finished_ok.connect(_done)
+        task.failed.connect(_fail)
+        task.start()
 
     def _set_ronghe_combo_tooltip(self):
         lines = ["融合方式："]
@@ -1750,8 +2397,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 traces_local = traces.copy()
 
             bounds = traces_local.total_bounds
-            dynamic_width = (bounds[2] - bounds[0]) / 20.0
-
+            export_cfg = _cfg_section("export_grid")
+            dynamic_width = float(self.dspin_grid_step.value()) if hasattr(self, "dspin_grid_step") else 0.0
+            if dynamic_width <= 0:
+                dynamic_width = float(export_cfg.get("cell_width", 0.0) or 0.0)
+            if dynamic_width <= 0:
+                dynamic_width = (bounds[2] - bounds[0]) / 20.0
             if dynamic_width <= 0:
                 dynamic_width = 100.0
 
@@ -1830,36 +2481,29 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if not csv_path:
             return
         warnings.filterwarnings("ignore")
+        n_k = int(self.spin_kmeans_k.value()) if hasattr(self, "spin_kmeans_k") else int(_cfg_section("clustering").get("n_clusters", 4))
         try:
             if method == "自编码器":
-                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_ae(
-                    csv_path, n_latent=2, n_clusters=4, ae_epochs=100
-                )
+                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_ae(csv_path, n_clusters=n_k)
                 x_col, y_col = "Z1", "Z2"
                 method_name = "自编码器"
             elif method == "UMAP":
-                df_out, scaler, _, kmeans, cluster_means = run_fusion_pipeline_umap(
-                    csv_path, n_components=2, n_clusters=4, n_neighbors=15
-                )
+                df_out, scaler, _, kmeans, cluster_means = run_fusion_pipeline_umap(csv_path, n_clusters=n_k)
                 x_col, y_col = "U1", "U2"
                 method_name = "UMAP"
             elif method == "VAE":
-                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_vae(
-                    csv_path, n_latent=2, n_clusters=4, vae_epochs=150
-                )
+                df_out, scaler, kmeans, cluster_means = run_fusion_pipeline_vae(csv_path, n_clusters=n_k)
                 x_col, y_col = "Z1", "Z2"
                 method_name = "VAE"
             else:
-                df_out, scaler, pca, kmeans, cluster_means = run_fusion_pipeline(
-                    csv_path, n_components=2, n_clusters=4
-                )
+                df_out, scaler, pca, kmeans, cluster_means = run_fusion_pipeline(csv_path, n_clusters=n_k)
                 x_col, y_col = "PC1", "PC2"
                 method_name = "PCA"
         except Exception as e:
-            QMessageBox.critical(self, "运行出错", f"属性融合或聚类时出错：\n{str(e)}")
+            QMessageBox.critical(self, "运行出错", self._friendly_error_message("属性融合/聚类", str(e)))
             return
         n_samples = len(df_out)
-        n_clusters = int(df_out["cluster_id"].max()) + 1
+        n_clusters = int(df_out["cluster_id"].nunique())
         spatial_ok = all(
             c in df_out.columns
             for c in (
@@ -1932,6 +2576,54 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 ax2.text(0.5, 0.5, "无法绘制空间网格（缺少顶点列）", ha="center", va="center", transform=ax2.transAxes)
                 ax2.set_axis_off()
         plt.tight_layout()
+        cluster_paths: dict = {}
+        qual: dict = {}
+        from utils.export_utils import build_run_metadata
+
+        run_meta = build_run_metadata(config_path=os.path.join(_PROGRAM_DIR, "config.yaml"))
+        df_out["processing_run_id"] = run_meta.get("processing_run_id", "")
+        df_out["run_timestamp_utc"] = run_meta.get("run_timestamp_utc", "")
+        df_out["config_hash_sha256"] = run_meta.get("config_hash_sha256", "")
+        if (
+            build_cluster_name_map is not None
+            and attach_cluster_names is not None
+            and compute_cluster_quality_metrics is not None
+            and compute_cluster_stability_ari is not None
+            and build_cluster_summary_rows is not None
+            and export_cluster_results is not None
+        ):
+            try:
+                conn_cols = [c for c in _TF_CONN_COLS if c in cluster_means.columns]
+                name_map = build_cluster_name_map(cluster_means, connectivity_cols=conn_cols or None)
+                df_out = attach_cluster_names(df_out, name_map)
+                Xz = df_out[[x_col, y_col]].to_numpy(dtype=np.float64)
+                qual = compute_cluster_quality_metrics(Xz, df_out["cluster_id"].to_numpy())
+                qual.update(compute_cluster_stability_ari(Xz, n_clusters))
+                summary_df = build_cluster_summary_rows(df_out, cluster_means, name_map)
+                cluster_paths = export_cluster_results(
+                    df_out,
+                    csv_path,
+                    method_name,
+                    cluster_summary=summary_df,
+                    quality_metrics=qual or None,
+                )
+            except Exception:
+                try:
+                    cluster_paths = export_cluster_results(df_out, csv_path, method_name)
+                except Exception:
+                    cluster_paths = {}
+        elif export_cluster_results is not None:
+            try:
+                cluster_paths = export_cluster_results(df_out, csv_path, method_name)
+            except Exception:
+                cluster_paths = {}
+        self._remember_exports(
+            "属性融合聚类",
+            cluster_csv=cluster_paths.get("csv"),
+            cluster_gpkg=cluster_paths.get("gpkg"),
+            cluster_summary=cluster_paths.get("cluster_summary_csv"),
+            fusion_quality=cluster_paths.get("quality_json"),
+        )
         self.embed_figure(
             fig1,
             description=(
@@ -1943,22 +2635,89 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         summary_lines = [
             "【智能拓扑分析结果】",
             "",
-            f"融合方式：{method_name}",
+            f"融合方式：{method_name}（GUI k={n_k}）",
             f"数据：{os.path.basename(csv_path)}",
             f"有效网格数：{n_samples}",
             f"聚类数：{n_clusters}",
-            f"新属性：{x_col}, {y_col}, cluster_id",
-            "",
-            "各簇在部分拓扑属性上的均值：",
-            "",
-            cluster_means.head(4).to_string(),
+            f"新属性：{x_col}, {y_col}, cluster_id, cluster_name（导出列）",
+            f"聚类结果 CSV：{self._relpath_for_ui(cluster_paths.get('csv', '未导出'))}",
+            f"聚类结果 GPKG：{self._relpath_for_ui(cluster_paths.get('gpkg', '未导出或无空间几何'))}",
+            f"逐簇统计表：{self._relpath_for_ui(cluster_paths.get('cluster_summary_csv', '—'))}",
+            f"质量指标 JSON：{self._relpath_for_ui(cluster_paths.get('quality_json', '—'))}",
         ]
+        if qual:
+            summary_lines.extend(
+                [
+                    "",
+                    "聚类质量（潜空间）：",
+                    f"  silhouette_score（越大越好）：{qual.get('silhouette_score', float('nan')):.4f}",
+                    f"  davies_bouldin_index（越小越好）：{qual.get('davies_bouldin_index', float('nan')):.4f}",
+                    f"  stability ARI 均值（越大越稳）：{qual.get('cluster_stability_ari_mean', float('nan')):.4f}",
+                ]
+            )
+        if "cluster_name" in df_out.columns:
+            summary_lines.extend(
+                [
+                    "",
+                    "簇命名（示意）：",
+                    df_out[["cluster_id", "cluster_name"]].drop_duplicates().sort_values("cluster_id").to_string(index=False),
+                ]
+            )
+        summary_lines.extend(
+            [
+                "",
+                "各簇在部分拓扑属性上的均值：",
+                "",
+                cluster_means.head(min(8, len(cluster_means))).to_string(),
+            ]
+        )
         self.text_browser.clear()
         self.text_browser.insertPlainText("\n".join(summary_lines))
         self.text_browser.moveCursor(QTextCursor.End)
+        from utils.export_utils import clusters_gpkg_layer_name as _layer_fn, write_run_manifest
+
+        _layer = _layer_fn(method_name)
+        run_manifest = write_run_manifest(
+            os.path.join(os.path.dirname(csv_path), "data", "processed"),
+            run_id=str(run_meta.get("processing_run_id", "")) or None,
+            kind="cluster",
+            config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+            artifacts={
+                "cluster_csv": cluster_paths.get("csv"),
+                "cluster_gpkg": cluster_paths.get("gpkg"),
+                "cluster_summary_csv": cluster_paths.get("cluster_summary_csv"),
+                "quality_json": cluster_paths.get("quality_json"),
+            },
+            extra={
+                "method": method_name,
+                "n_clusters": int(n_clusters),
+                "k_gui": int(n_k),
+            },
+        )
+        self._remember_exports("属性融合聚类", run_manifest=run_manifest)
+        self._update_last_run_card(
+            [
+                "类型：属性融合 + 聚类",
+                f"方法：{method_name}，k={n_clusters}",
+                f"导出：{self._relpath_for_ui(cluster_paths.get('csv', ''))}",
+                f"GPKG 图层：{_layer}",
+            ]
+        )
+        self._append_run_history(
+            {
+                "kind": "fusion_cluster",
+                "method": method_name,
+                "k": int(n_clusters),
+                "silhouette": qual.get("silhouette_score") if qual else None,
+                "cluster_csv": cluster_paths.get("csv"),
+            }
+        )
+        self._refresh_config_summary()
         QMessageBox.information(
             self, "运行完成",
-            f"已用 {method_name} 生成 {x_col}、{y_col} 与 {n_clusters} 类聚类结果。",
+            f"已用 {method_name} 生成 {x_col}、{y_col} 与 {n_clusters} 类聚类结果；GPKG 图层名为「{_layer}」"
+            f"。\n聚类 CSV：{self._relpath_for_ui(cluster_paths.get('csv', '未导出'))}"
+            f"\n聚类 GPKG：{self._relpath_for_ui(cluster_paths.get('gpkg', '未导出或无空间几何'))}",
         )
 
 

@@ -70,10 +70,61 @@ class Ui_MainWindow(object):
         self.combo_data_source.setStyleSheet(_combo_style_data_source)
         self.row0_layout.addWidget(self.lbl_data_source)
         self.row0_layout.addWidget(self.combo_data_source)
-        self.lbl_ui_hint = QtWidgets.QLabel("提示：悬停按钮可看功能说明；出图后右侧图下方会显示「图说明」")
-        self.lbl_ui_hint.setStyleSheet("color: #6c757d; font-size: 12px;")
-        self.row0_layout.addWidget(self.lbl_ui_hint)
+        # 将原第三排下方“打开目录/取消任务”按钮挪到顶部，替代提示位
+        self.btn_open_model_dir = QtWidgets.QPushButton("打开 model/")
+        self.btn_open_model_dir.setToolTip("打开当前程序目录下的 model 文件夹（含 xgboost_reg.json、预测导出等）。")
+        self.btn_open_processed_dir = QtWidgets.QPushButton("打开 data/processed/")
+        self.btn_open_processed_dir.setToolTip("打开导出的聚类/流水线中间结果 CSV 等所在目录。")
+        self.btn_cancel_task = QtWidgets.QPushButton("取消任务")
+        self.btn_cancel_task.setToolTip("取消正在后台执行的长任务（如一键空间-拓扑融合）。")
+        for b in (self.btn_open_model_dir, self.btn_open_processed_dir, self.btn_cancel_task):
+            b.setMinimumHeight(28)
+            b.setMaximumHeight(30)
+            self.row0_layout.addWidget(b)
         self.row0_layout.addStretch()
+
+        # 右上参数面板：将流程提示 + 参数编辑集中到右上角
+        self.top_right_panel = QtWidgets.QWidget()
+        self.top_right_panel.setStyleSheet(
+            "background:#f3f6fb; border:1px solid #d4dbe6; border-radius:4px;"
+        )
+        self.top_right_layout = QtWidgets.QVBoxLayout(self.top_right_panel)
+        self.top_right_layout.setContentsMargins(8, 4, 8, 4)
+        self.top_right_layout.setSpacing(0)
+
+        # --- 运行参数（GUI 覆盖 config.yaml）---
+        self.row_ml_params_layout = QtWidgets.QHBoxLayout()
+        self.row_ml_params_layout.setContentsMargins(0, 0, 0, 0)
+        self.row_ml_params_layout.setSpacing(6)
+        self.lbl_kmeans_k = QtWidgets.QLabel("聚类 k:")
+        self.lbl_kmeans_k.setToolTip("属性融合中 KMeans 簇数，写入本次运行；仍可在 config.yaml 中保留默认值。")
+        self.spin_kmeans_k = QtWidgets.QSpinBox()
+        self.spin_kmeans_k.setRange(2, 24)
+        self.spin_kmeans_k.setValue(4)
+        self.lbl_train_target = QtWidgets.QLabel("训练目标列:")
+        self.lbl_train_target.setToolTip("训练 XGBoost 时使用的目标列；下拉为自动推荐的数值列，也可手动编辑。")
+        self.combo_train_target = QtWidgets.QComboBox()
+        self.combo_train_target.setEditable(True)
+        self.combo_train_target.setMinimumWidth(220)
+        self.lbl_grid_step = QtWidgets.QLabel("网格步长(m):")
+        self.lbl_grid_step.setToolTip("等值线/轮廓图采样时的单元边长；与 export_grid.cell_width 一致思路。")
+        self.dspin_grid_step = QtWidgets.QDoubleSpinBox()
+        self.dspin_grid_step.setRange(10.0, 50000.0)
+        self.dspin_grid_step.setDecimals(1)
+        self.dspin_grid_step.setValue(750.0)
+        for w in (
+            self.lbl_kmeans_k,
+            self.spin_kmeans_k,
+            self.lbl_train_target,
+            self.combo_train_target,
+            self.lbl_grid_step,
+            self.dspin_grid_step,
+        ):
+            self.row_ml_params_layout.addWidget(w)
+        self.top_right_layout.addLayout(self.row_ml_params_layout)
+        self.top_right_panel.setFixedHeight(42)
+        self.top_right_panel.setMinimumWidth(640)
+        self.row0_layout.addWidget(self.top_right_panel)
         self.top_layout.addLayout(self.row0_layout)
 
         # --- 第一排：基础地质与拓扑绘图 ---
@@ -159,6 +210,7 @@ class Ui_MainWindow(object):
         self.btn_ronghe = QtWidgets.QPushButton("执行属性融合分析")
         self.btn_guoji_weighted = QtWidgets.QPushButton("高价值属性加权融合")
         self.btn_guoji_compare = QtWidgets.QPushButton("融合对比(加权vsGAT)")
+        self.btn_k_helper = QtWidgets.QPushButton("选k辅助")
         self.btn_guoji_train = QtWidgets.QPushButton("训练XGBoost模型")
         self.lbl_shap_features = QtWidgets.QLabel("SHAP关注特征:")
         self.combo_shap_features = QtWidgets.QComboBox()
@@ -170,6 +222,7 @@ class Ui_MainWindow(object):
         self.combo_shap_features.addItem("全部（默认顺序）")
         self.btn_guoji_shap = QtWidgets.QPushButton("SHAP可解释分析")
         self.btn_spatial = QtWidgets.QPushButton("一键空间-拓扑融合")
+        self.btn_export_results = QtWidgets.QPushButton("导出结果")
 
         self.combo_fusion.setToolTip(
             "【融合方法】将多列网格拓扑属性降维到 2 维（PCA / 自编码器 / UMAP / VAE），再做 KMeans 聚类。\n"
@@ -184,6 +237,9 @@ class Ui_MainWindow(object):
         self.btn_guoji_compare.setToolTip(
             "对比规则加权融合与 GAT 图网络融合得分分布（箱线图）。需安装 PyG；失败时会跳过 GAT 并提示。"
         )
+        self.btn_k_helper.setToolTip(
+            "基于当前融合特征计算不同 k 的 Inertia / Silhouette / Davies-Bouldin 曲线，辅助选择聚类数。"
+        )
         self.btn_guoji_train.setToolTip(
             "用特征工程后的矩阵训练 XGBoost（配置见 config.yaml）。需先有英买 2 等网格 CSV。"
         )
@@ -193,16 +249,20 @@ class Ui_MainWindow(object):
         self.btn_spatial.setToolTip(
             "【流水线】特征工程 → 加权融合 →（可选）GAT → XGBoost → SHAP 一键跑完；耗时较长，结果写 processed。"
         )
+        self.btn_export_results.setToolTip(
+            "汇总显示最近一次聚类/训练/SHAP/一键流水线的导出文件路径（CSV/GPKG/图片/模型）。"
+        )
 
         self.combo_fusion.setStyleSheet(_combo_style)
         self.combo_shap_features.setStyleSheet(_combo_style)
         for widget in [self.combo_fusion, self.btn_ronghe, self.btn_guoji_weighted, self.btn_guoji_compare,
+                       self.btn_k_helper,
                        self.btn_guoji_train]:
             widget.setMinimumHeight(35)
             self.row3_layout.addWidget(widget)
         self.row3_layout.addWidget(self.lbl_shap_features)
         self.row3_layout.addWidget(self.combo_shap_features)
-        for widget in [self.btn_guoji_shap, self.btn_spatial]:
+        for widget in [self.btn_guoji_shap, self.btn_spatial, self.btn_export_results]:
             widget.setMinimumHeight(35)
             self.row3_layout.addWidget(widget)
         self.top_layout.addLayout(self.row3_layout)
@@ -214,8 +274,61 @@ class Ui_MainWindow(object):
         # ==========================================
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
 
-        # --- 左侧：信息与日志输出区 ---
-        self.text_browser = QtWidgets.QTextBrowser(self.splitter)
+        # --- 左侧：配置摘要 + 信息与日志输出区 ---
+        self.left_panel = QtWidgets.QWidget(self.splitter)
+        self.left_panel_layout = QtWidgets.QVBoxLayout(self.left_panel)
+        self.left_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self.left_panel_layout.setSpacing(8)
+
+        self.config_summary_title = QtWidgets.QLabel("当前配置摘要")
+        self.config_summary_title.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #2c3e50; padding: 2px 4px;"
+        )
+        self.left_panel_layout.addWidget(self.config_summary_title)
+
+        self.config_summary_browser = QtWidgets.QTextBrowser(self.left_panel)
+        self.config_summary_browser.setMinimumHeight(132)
+        self.config_summary_browser.setMaximumHeight(148)
+        self.config_summary_browser.setStyleSheet(
+            "background-color: #eef3f8; "
+            "color: #2c3e50; "
+            "border: 1px solid #cfd8e3; "
+            "border-radius: 4px; "
+            "font-family: Consolas, 'Courier New', monospace; "
+            "font-size: 13px; "
+            "padding: 6px; "
+            "line-height: 1.35;"
+        )
+        self.left_panel_layout.addWidget(self.config_summary_browser)
+
+        self.last_run_title = QtWidgets.QLabel("最近一次运行结果")
+        self.last_run_title.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #2c3e50; padding: 2px 4px;"
+        )
+        self.left_panel_layout.addWidget(self.last_run_title)
+
+        self.last_run_browser = QtWidgets.QTextBrowser(self.left_panel)
+        self.last_run_browser.setMinimumHeight(96)
+        self.last_run_browser.setMaximumHeight(132)
+        self.last_run_browser.setStyleSheet(
+            "background-color: #f5f9f4; "
+            "color: #2c3e50; "
+            "border: 1px solid #c8dcc4; "
+            "border-radius: 4px; "
+            "font-family: Consolas, 'Courier New', monospace; "
+            "font-size: 12px; "
+            "padding: 6px; "
+            "line-height: 1.35;"
+        )
+        self.left_panel_layout.addWidget(self.last_run_browser)
+
+        self.log_title = QtWidgets.QLabel("运行日志 / 数值输出")
+        self.log_title.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #2c3e50; padding: 2px 4px;"
+        )
+        self.left_panel_layout.addWidget(self.log_title)
+
+        self.text_browser = QtWidgets.QTextBrowser(self.left_panel)
         self.text_browser.setMinimumWidth(350)
         self.text_browser.setStyleSheet(
             "background-color: #f8f9fa; "
@@ -227,6 +340,7 @@ class Ui_MainWindow(object):
             "padding: 8px; "
             "line-height: 1.5;"
         )
+        self.left_panel_layout.addWidget(self.text_browser, 1)
 
         # --- 右下侧：图片内嵌大画板 ---
         self.canvas_container = QtWidgets.QWidget(self.splitter)
@@ -234,7 +348,7 @@ class Ui_MainWindow(object):
         self.canvas_layout = QtWidgets.QVBoxLayout(self.canvas_container)
         self.canvas_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.splitter.setSizes([350, 1050])
+        self.splitter.setSizes([430, 970])
         self.main_vbox.addWidget(self.splitter, 1)
 
         MainWindow.setCentralWidget(self.centralwidget)
