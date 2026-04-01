@@ -9,6 +9,21 @@ import platform
 import warnings
 from typing import Optional, List, Dict, Any
 
+# PyInstaller 打包后 macOS 用 spawn 模式启动子进程，会导致 fractopo/joblib 的
+# multiprocessing worker 找不到入口而崩溃（"worker unexpectedly terminated"）。
+# 必须在任何 import 之前调用 freeze_support()，并把 joblib/loky 限制为单线程。
+if getattr(sys, "frozen", False):
+    # 打包环境：注册 freeze_support 并强制 joblib 使用单线程
+    import multiprocessing
+    multiprocessing.freeze_support()
+    os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+    try:
+        import joblib
+        joblib.parallel.DEFAULT_BACKEND = "threading"
+    except Exception:
+        pass
+
 # 保证 program 目录在 path 中，便于从项目根或 program/ 运行时的导入
 _PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PROGRAM_DIR not in sys.path:
@@ -214,7 +229,21 @@ def try_network(*args, **kwargs):
     返回 (network, None) 或 (None, 错误说明)。
     """
     try:
-        return Network(*args, **kwargs), None
+        # 某些入口路径下 traces/area 可能被后续逻辑替换为地理 CRS。
+        # 在进入 fractopo 前统一再做一次 CRS 对齐与米制投影，避免 length/contour_grid
+        # 在经纬度坐标上计算并触发大量告警或结果失真。
+        norm_args = list(args)
+        if len(norm_args) >= 2:
+            maybe_traces, maybe_area = norm_args[0], norm_args[1]
+            if isinstance(maybe_traces, gpd.GeoDataFrame) and isinstance(maybe_area, gpd.GeoDataFrame):
+                maybe_traces, maybe_area = unify_traces_area_crs(maybe_traces, maybe_area)
+                maybe_traces, maybe_area = reproject_to_metric_crs(maybe_traces, maybe_area)
+                norm_args[0], norm_args[1] = maybe_traces, maybe_area
+                try:
+                    print(f"[CRS] traces={maybe_traces.crs} area={maybe_area.crs}")
+                except Exception:
+                    pass
+        return Network(*norm_args, **kwargs), None
     except ValueError as e:
         if "Empty trace GeoDataFrame after crop" in str(e):
             return None, EMPTY_CROP_MSG
@@ -386,6 +415,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         super(MainWindow, self).__init__(parent)
         self.setupUi(self)
         self._last_exports = {}
+        self._initializing_ui = True
+        self._is_rendering_contour = False
 
         # 1. 开启终端输出智能重定向（带降噪滤镜）
         self.stdout_redirector = StreamRedirector(is_error=False)
@@ -455,6 +486,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.btn_export_results.clicked.connect(self.show_export_results)
 
         self.opt = 0
+        self._initializing_ui = False
         print("油气区断裂网络连通性智能分析与预测系统 — 初始化完成")
 
 
@@ -1674,6 +1706,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def onIndexChanged(self, index):
         self.opt = index
+        if getattr(self, "_initializing_ui", False):
+            return
+        if index <= 0:
+            return
         self.run_lunkuo()
 
     def onIndexChanged_2(self, index):
@@ -1681,6 +1717,68 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.run_tuopuhou1()
         elif index == 2:
             self.run_tuopuhou2()
+
+    # ── 通用后台 Network 计算框架 ────────────────────────────────────────────
+    def _run_with_network(self, render_fn, network_kwargs=None, loading_text="正在构建断裂网络，请耐心等待..."):
+        """
+        在后台线程中执行 try_network，完成后在主线程调用 render_fn(network)。
+        避免主线程阻塞导致 macOS 触发"无响应"警告与强制重启。
+        """
+        if traces is None or area is None or traces.empty:
+            QMessageBox.warning(self, "无数据", "请先切换数据源并确保迹线、研究区文件存在且非空。")
+            return
+
+        progress = QtWidgets.QProgressDialog(loading_text, None, 0, 0, self)
+        progress.setWindowTitle("系统运算中")
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+
+        kw = dict(
+            determine_branches_nodes=True,
+            truncate_traces=True,
+            circular_target_area=False,
+            snap_threshold=0.001,
+        )
+        if network_kwargs:
+            kw.update(network_kwargs)
+
+        traces_snap = traces.copy()
+        area_snap = area.copy() if area is not None else None
+        name_snap = name
+
+        def _bg():
+            nw, err = try_network(traces_snap, area_snap, name=name_snap, **kw)
+            if err:
+                raise RuntimeError(err)
+            return nw
+
+        def _done(nw):
+            try:
+                render_fn(nw)
+            except Exception as e:
+                print(f"❌ 渲染报错: {e}")
+            finally:
+                _cleanup()
+
+        def _fail(msg):
+            print(f"❌ 网络构建报错: {msg}")
+            QMessageBox.warning(self, "无法构建断裂网络", msg)
+            _cleanup()
+
+        def _cleanup():
+            QtWidgets.QApplication.restoreOverrideCursor()
+            progress.close()
+            self._nw_runner = None
+
+        runner = TaskRunner(_bg)
+        runner.finished_ok.connect(_done)
+        runner.failed.connect(_fail)
+        self._nw_runner = runner
+        runner.start()
 
     def run_yuantu(self):
         warnings.filterwarnings("ignore")
@@ -1704,236 +1802,149 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_fenleihou(self):
         warnings.filterwarnings("ignore")
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        fig, ax = plt.subplots(figsize=(9, 9 * rate))
-        ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
-        network.branch_gdf.plot(
-            colors=[assign_colors(bt) for bt in network.branch_types],
-            ax=ax,
-            aspect="equal",
-        )
-        handles = [
-            plt.Line2D([0], [0], color="green", lw=2, label="CC_branch / X_node"),
-            plt.Line2D([0], [0], color="blue", lw=2, label="CI_branch / Y_node"),
-            plt.Line2D([0], [0], color="black", lw=2, label="II_branch / I_node"),
-            plt.Line2D([0], [0], color="red", lw=2, label="Other / Boundary"),
-        ]
-        ax.legend(handles=handles, loc='lower left')
-        plt.xlim((left - width, right + width))
-        plt.ylim((down - height, up + height))
-        ax.set_aspect('equal')
-        for s in ax.spines.values():
-            s.set_color("#0d0d0d")
-            s.set_linewidth(1.35)
-        self.embed_figure(
-            fig,
-            description=(
-                "分类后迹线图：按 fractopo 分支类型（CC/CI/II）对线段着色；图例中绿色/蓝色/黑色对应不同分支类，"
-                "红色为无法归类或边界相关；反映拓扑划分后的空间模式。"
-            ),
-        )
+        def _render(network):
+            fig, ax = plt.subplots(figsize=(9, 9 * rate))
+            ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
+            network.branch_gdf.plot(
+                colors=[assign_colors(bt) for bt in network.branch_types],
+                ax=ax,
+                aspect="equal",
+            )
+            handles = [
+                plt.Line2D([0], [0], color="green", lw=2, label="CC_branch / X_node"),
+                plt.Line2D([0], [0], color="blue", lw=2, label="CI_branch / Y_node"),
+                plt.Line2D([0], [0], color="black", lw=2, label="II_branch / I_node"),
+                plt.Line2D([0], [0], color="red", lw=2, label="Other / Boundary"),
+            ]
+            ax.legend(handles=handles, loc='lower left')
+            plt.xlim((left - width, right + width))
+            plt.ylim((down - height, up + height))
+            ax.set_aspect('equal')
+            for s in ax.spines.values():
+                s.set_color("#0d0d0d")
+                s.set_linewidth(1.35)
+            self.embed_figure(
+                fig,
+                description=(
+                    "分类后迹线图：按 fractopo 分支类型（CC/CI/II）对线段着色；图例中绿色/蓝色/黑色对应不同分支类，"
+                    "红色为无法归类或边界相关；反映拓扑划分后的空间模式。"
+                ),
+            )
+        self._run_with_network(_render)
 
     def run_tuopuhou1(self):
         warnings.filterwarnings("ignore")
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        fig, ax = plt.subplots(figsize=(9, 9 * rate))
-        ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
-        network.trace_gdf.plot(ax=ax, linewidth=0.5, aspect="equal")
-        network.node_gdf.plot(
-            c=[assign_colors(bt) for bt in network.node_types],
-            ax=ax,
-            markersize=10,
-            aspect="equal",
-        )
-        area.boundary.plot(ax=ax, color="red", aspect="equal")
-        handles = [
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="green", markersize=10, label="X_node"),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="blue", markersize=10, label="Y_node"),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="black", markersize=10, label="I_node"),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="red", markersize=10, label="Other / Boundary"),
-        ]
-        ax.legend(handles=handles, loc='lower left')
-        plt.xlim((left - width, right + width))
-        plt.ylim((down - height, up + height))
-        ax.set_aspect('equal')
-        self.embed_figure(
-            fig,
-            description=(
-                "拓扑化视图 1：浅色为迹线；节点按 X/Y/I 类型着色（见左下角图例示意），红线为研究区边界。"
-                "用于核对节点识别是否落在迹线交点等位置。"
-            ),
-        )
+        def _render(network):
+            fig, ax = plt.subplots(figsize=(9, 9 * rate))
+            ax.set_title(f"{name}, Coordinate Reference System = {traces.crs}")
+            network.trace_gdf.plot(ax=ax, linewidth=0.5, aspect="equal")
+            network.node_gdf.plot(
+                c=[assign_colors(bt) for bt in network.node_types],
+                ax=ax,
+                markersize=10,
+                aspect="equal",
+            )
+            area.boundary.plot(ax=ax, color="red", aspect="equal")
+            handles = [
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="green", markersize=10, label="X_node"),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="blue", markersize=10, label="Y_node"),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="black", markersize=10, label="I_node"),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="red", markersize=10, label="Other / Boundary"),
+            ]
+            ax.legend(handles=handles, loc='lower left')
+            plt.xlim((left - width, right + width))
+            plt.ylim((down - height, up + height))
+            ax.set_aspect('equal')
+            self.embed_figure(
+                fig,
+                description=(
+                    "拓扑化视图 1：浅色为迹线；节点按 X/Y/I 类型着色（见左下角图例示意），红线为研究区边界。"
+                    "用于核对节点识别是否落在迹线交点等位置。"
+                ),
+            )
+        self._run_with_network(_render)
 
     def run_tuopuhou2(self):
         warnings.filterwarnings("ignore")
-        # Drop duplicates from the trace GeoDataFrame
-        traces.drop_duplicates(subset="geometry", inplace=True)
-        # Reset the index of the GeoDataFrame
-        traces.reset_index(drop=True, inplace=True)
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        # 定义节点类型到颜色的映射
-        type_to_color = {
-            'E': 'red',  # 假设E类型节点用红色表示
-            'I': 'green',  # 假设I类型节点用绿色表示
-            'X': 'blue',  # 假设X类型节点用蓝色表示
-            'Y': 'yellow',  # 假设Y类型节点用黄色表示
-        }
-        # 定义节点类型到形状的映射
-        type_to_shape = {
-            'E': 'o',
-            'I': 'o',
-            'X': '^',
-            'Y': '*',
-        }
-        # 开始绘图
-        fig, ax = plt.subplots(figsize=(9, 9 * rate))
-
-        # 按分支类型分组绘制（branch_gdf）；fractopo≥0.9 用 Connection（C - C 等），旧版曾用 Class（CC/CI/II）
-        bg = network.branch_gdf
-        if CONNECTION_COLUMN in bg.columns:
-            branch_draw = [
-                (CC_branch, "red", "CC"),
-                (CI_branch, "green", "CI"),
-                (II_branch, "blue", "II"),
-            ]
-            for conn_val, color, leg in branch_draw:
-                subset = bg[bg[CONNECTION_COLUMN] == conn_val]
-                if not subset.empty:
-                    subset.plot(
-                        ax=ax,
-                        color=color,
-                        linewidth=1,
-                        label=leg,
-                        aspect="equal",
-                    )
-        elif "Class" in bg.columns:
-            for branch_type, color in (("CC", "red"), ("CI", "green"), ("II", "blue")):
-                subset = bg[bg["Class"] == branch_type]
-                if not subset.empty:
-                    subset.plot(
-                        ax=ax,
-                        color=color,
-                        linewidth=1,
-                        label=branch_type,
-                        aspect="equal",
-                    )
-        else:
-            QMessageBox.warning(
-                self,
-                "无法绘制分支",
-                "branch_gdf 中未找到「Connection」或「Class」列，可能与当前 fractopo 版本不兼容。",
+        def _render(network):
+            type_to_color = {'E': 'red', 'I': 'green', 'X': 'blue', 'Y': 'yellow'}
+            type_to_shape = {'E': 'o', 'I': 'o', 'X': '^', 'Y': '*'}
+            fig, ax = plt.subplots(figsize=(9, 9 * rate))
+            bg = network.branch_gdf
+            if CONNECTION_COLUMN in bg.columns:
+                for conn_val, color, leg in [(CC_branch, "red", "CC"), (CI_branch, "green", "CI"), (II_branch, "blue", "II")]:
+                    subset = bg[bg[CONNECTION_COLUMN] == conn_val]
+                    if not subset.empty:
+                        subset.plot(ax=ax, color=color, linewidth=1, label=leg, aspect="equal")
+            elif "Class" in bg.columns:
+                for branch_type, color in (("CC", "red"), ("CI", "green"), ("II", "blue")):
+                    subset = bg[bg["Class"] == branch_type]
+                    if not subset.empty:
+                        subset.plot(ax=ax, color=color, linewidth=1, label=branch_type, aspect="equal")
+            else:
+                QMessageBox.warning(self, "无法绘制分支", "branch_gdf 中未找到「Connection」或「Class」列，可能与当前 fractopo 版本不兼容。")
+                return
+            for node_type in type_to_color:
+                nodes = network.node_gdf[network.node_gdf[CLASS_COLUMN] == node_type]
+                if not nodes.empty:
+                    ax.scatter(nodes.geometry.x, nodes.geometry.y, s=50,
+                               c=type_to_color[node_type], marker=type_to_shape[node_type], label=node_type, zorder=5)
+            area.boundary.plot(ax=ax, color="red", aspect="equal")
+            plt.xlim((left - width, right + width))
+            plt.ylim((down - height, up + height))
+            ax.legend(title=' Type')
+            ax.set_aspect('equal')
+            self.embed_figure(
+                fig,
+                description=(
+                    "拓扑化视图 2：彩色线段表示分支连接类型（C-C / C-I / I-I 等 fractopo Connection 记号），"
+                    "节点散点为 X/Y/I/E 类型；与视图 1 互补，侧重「线段-节点」联合展示。"
+                ),
             )
-            return
-
-        # 遍历每个节点类型，绘制对应类型的节点
-        for node_type in type_to_color.keys():
-            nodes = network.node_gdf[network.node_gdf[CLASS_COLUMN] == node_type]
-            if not nodes.empty:
-                ax.scatter(nodes.geometry.x, nodes.geometry.y, s=50,
-                           c=type_to_color[node_type], marker=type_to_shape[node_type], label=node_type, zorder=5)
-        area.boundary.plot(ax=ax, color="red", aspect="equal")
-        plt.xlim((left - width, right + width))
-        plt.ylim((down - height, up + height))
-        ax.legend(title=' Type')
-        ax.set_aspect('equal')
-        self.embed_figure(
-            fig,
-            description=(
-                "拓扑化视图 2：彩色线段表示分支连接类型（C-C / C-I / I-I 等 fractopo Connection 记号），"
-                "节点散点为 X/Y/I/E 类型；与视图 1 互补，侧重「线段-节点」联合展示。"
-            ),
-        )
+        self._run_with_network(_render)
 
     def run_tuopushuxing(self):
         warnings.filterwarnings("ignore")
-        network, nw_err = try_network(
-            traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
-            circular_target_area=False, snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        parameters = 'parameters'.ljust(40, ' ') + 'values' + "\n"
-        for key, value in network.parameters.items():
-            parameters = parameters + str(key).ljust(40, ' ') + str(value) + "\n"
-        self.text_browser.clear()
-        self.text_browser.insertPlainText(parameters)
-        self.text_browser.moveCursor(QTextCursor.End)
+        def _render(network):
+            parameters = 'parameters'.ljust(40, ' ') + 'values' + "\n"
+            for key, value in network.parameters.items():
+                parameters = parameters + str(key).ljust(40, ' ') + str(value) + "\n"
+            self.text_browser.clear()
+            self.text_browser.insertPlainText(parameters)
+            self.text_browser.moveCursor(QTextCursor.End)
+        self._run_with_network(_render)
 
     def run_azimuth(self):
         setup_matplotlib_chinese()
-        network, nw_err = try_network(
-            name=name,
-            trace_gdf=traces,
-            area_gdf=area,
-            truncate_traces=True,
-            circular_target_area=False,
-            determine_branches_nodes=True,
-            snap_threshold=0.001,
-            azimuth_set_names=("N-S", "E-W"),
-            azimuth_set_ranges=((135, 45), (45, 135)),
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        pprint((network.azimuth_set_names, network.azimuth_set_ranges))
-        pprint(network.trace_azimuth_set_counts)
-        fig, ax = plt.subplots(figsize=(9, 9 * rate))
-        colors = ("red", "blue")
-        assert len(colors) == len(network.azimuth_set_names)
-        for azimuth_set, set_range, color in zip(network.azimuth_set_names, network.azimuth_set_ranges, colors):
-            trace_gdf_set = network.trace_gdf.loc[network.trace_gdf["azimuth_set"] == azimuth_set]
-            trace_gdf_set.plot(color=color, label=f"{azimuth_set} - {set_range}", ax=ax)
-        zh_fonts = plt.rcParams.get("font.sans-serif", [])
-        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
-        ax.set_title(f"方位角集图 - {name}", fontsize=14, fontfamily=font_family)
-        plt.xlim((left - width, right + width))
-        plt.ylim((down - height, up + height))
-        ax.set_aspect('equal')
-        for s in ax.spines.values():
-            s.set_color("#0d0d0d")
-            s.set_linewidth(1.35)
-        plt.legend()
-        self.embed_figure(
-            fig,
-            description=(
-                "方位角集图：不同颜色对应不同方位组（如 N-S 与 E-W 及角度范围）；"
-                "用于查看各走向迹线在工区内的分布是否分组明显。"
-            ),
-        )
+        def _render(network):
+            pprint((network.azimuth_set_names, network.azimuth_set_ranges))
+            pprint(network.trace_azimuth_set_counts)
+            fig, ax = plt.subplots(figsize=(9, 9 * rate))
+            colors = ("red", "blue")
+            for azimuth_set, set_range, color in zip(network.azimuth_set_names, network.azimuth_set_ranges, colors):
+                trace_gdf_set = network.trace_gdf.loc[network.trace_gdf["azimuth_set"] == azimuth_set]
+                trace_gdf_set.plot(color=color, label=f"{azimuth_set} - {set_range}", ax=ax)
+            zh_fonts = plt.rcParams.get("font.sans-serif", [])
+            font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+            ax.set_title(f"方位角集图 - {name}", fontsize=14, fontfamily=font_family)
+            plt.xlim((left - width, right + width))
+            plt.ylim((down - height, up + height))
+            ax.set_aspect('equal')
+            for s in ax.spines.values():
+                s.set_color("#0d0d0d")
+                s.set_linewidth(1.35)
+            plt.legend()
+            self.embed_figure(
+                fig,
+                description=(
+                    "方位角集图：不同颜色对应不同方位组（如 N-S 与 E-W 及角度范围）；"
+                    "用于查看各走向迹线在工区内的分布是否分组明显。"
+                ),
+            )
+        self._run_with_network(_render, network_kwargs={
+            "azimuth_set_names": ("N-S", "E-W"),
+            "azimuth_set_ranges": ((135, 45), (45, 135)),
+        })
 
     def run_relitu(self):
         warnings.filterwarnings("ignore")
@@ -1964,273 +1975,192 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def a(self):
         warnings.filterwarnings("ignore")
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        fit, fig1, ax = network.plot_trace_lengths()
-        # ax.set_aspect('equal')
-        fit, fig2, ax = network.plot_branch_lengths()
-        # ax.set_aspect('equal')
-
-        # 长度分布拟合线配色：主模型/对比模型，并降低饱和感（alpha）
-        fit_line_colors = {
-            "power": "#d62728",   # Power-law
-            "lognormal": "#1f77b4",
-            "exponential": "#2ca02c",
-        }
-        for fig in (fig1, fig2):
-            for one_ax in fig.axes:
-                for line in one_ax.get_lines():
-                    label = (line.get_label() or "").lower()
-                    if "power" in label:
-                        line.set_color(fit_line_colors["power"])
-                        line.set_alpha(0.7)
-                    elif "lognormal" in label:
-                        line.set_color(fit_line_colors["lognormal"])
-                        line.set_alpha(0.7)
-                    elif "exponential" in label:
-                        line.set_color(fit_line_colors["exponential"])
-                        line.set_alpha(0.7)
-                # 同步图例与注释文字颜色
-                legend = one_ax.get_legend()
-                if legend is not None:
-                    handles = getattr(legend, "legend_handles", None)
-                    if handles is None:
-                        handles = getattr(legend, "legendHandles", [])
-                    for handle, txt in zip(handles, legend.get_texts()):
+        def _render(network):
+            fit, fig1, ax = network.plot_trace_lengths()
+            fit, fig2, ax = network.plot_branch_lengths()
+            fit_line_colors = {
+                "power": "#d62728",
+                "lognormal": "#1f77b4",
+                "exponential": "#2ca02c",
+            }
+            for fig in (fig1, fig2):
+                for one_ax in fig.axes:
+                    for line in one_ax.get_lines():
+                        label = (line.get_label() or "").lower()
+                        if "power" in label:
+                            line.set_color(fit_line_colors["power"]); line.set_alpha(0.7)
+                        elif "lognormal" in label:
+                            line.set_color(fit_line_colors["lognormal"]); line.set_alpha(0.7)
+                        elif "exponential" in label:
+                            line.set_color(fit_line_colors["exponential"]); line.set_alpha(0.7)
+                    legend = one_ax.get_legend()
+                    if legend is not None:
+                        handles = getattr(legend, "legend_handles", None)
+                        if handles is None:
+                            handles = getattr(legend, "legendHandles", [])
+                        for handle, txt in zip(handles, legend.get_texts()):
+                            tlabel = (txt.get_text() or "").lower()
+                            if "power" in tlabel:
+                                color = fit_line_colors["power"]
+                            elif "lognormal" in tlabel:
+                                color = fit_line_colors["lognormal"]
+                            elif "exponential" in tlabel:
+                                color = fit_line_colors["exponential"]
+                            else:
+                                continue
+                            if hasattr(handle, "set_color"):
+                                handle.set_color(color)
+                            if hasattr(handle, "set_alpha"):
+                                handle.set_alpha(0.7)
+                            txt.set_color(color)
+                    for txt in one_ax.texts:
                         tlabel = (txt.get_text() or "").lower()
                         if "power" in tlabel:
-                            color = fit_line_colors["power"]
+                            txt.set_color(fit_line_colors["power"])
                         elif "lognormal" in tlabel:
-                            color = fit_line_colors["lognormal"]
+                            txt.set_color(fit_line_colors["lognormal"])
                         elif "exponential" in tlabel:
-                            color = fit_line_colors["exponential"]
-                        else:
-                            continue
-                        if hasattr(handle, "set_color"):
-                            handle.set_color(color)
-                        if hasattr(handle, "set_alpha"):
-                            handle.set_alpha(0.7)
-                        txt.set_color(color)
-                for txt in one_ax.texts:
-                    tlabel = (txt.get_text() or "").lower()
-                    if "power" in tlabel:
-                        txt.set_color(fit_line_colors["power"])
-                    elif "lognormal" in tlabel:
-                        txt.set_color(fit_line_colors["lognormal"])
-                    elif "exponential" in tlabel:
-                        txt.set_color(fit_line_colors["exponential"])
-
-        self.embed_figure(
-            [fig1, fig2],
-            descriptions=[
-                "迹线长度分布直方图及幂律、对数正态、指数等典型拟合曲线；用于判断标度律与共守分布形态。",
-                "分支长度分布及同样拟合对比；分支由迹线拓扑分解得到，长度统计与迹线层可对照阅读。",
-            ],
-        )
+                            txt.set_color(fit_line_colors["exponential"])
+            self.embed_figure(
+                [fig1, fig2],
+                descriptions=[
+                    "迹线长度分布直方图及幂律、对数正态、指数等典型拟合曲线；用于判断标度律与共守分布形态。",
+                    "分支长度分布及同样拟合对比；分支由迹线拓扑分解得到，长度统计与迹线层可对照阅读。",
+                ],
+            )
+        self._run_with_network(_render)
 
     def run_meiguitu(self):
         warnings.filterwarnings("ignore")
         setup_matplotlib_chinese()
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        azimuth_bin_dict, fig1, ax = network.plot_trace_azimuth()
-        azimuth_bin_dict, fig2, ax = network.plot_branch_azimuth()
-        # 仅覆盖玫瑰图配色，不改动其他绘图逻辑
-        for one_ax in fig1.axes:
-            for patch in one_ax.patches:
-                patch.set_facecolor("#2C3E50")  # 迹线玫瑰图填充
-                patch.set_edgecolor("black")    # 迹线玫瑰图边框
-                patch.set_alpha(0.65)           # 降低深蓝灰不透明度
-        for one_ax in fig2.axes:
-            for patch in one_ax.patches:
-                patch.set_facecolor("#AED6F1")  # 分支玫瑰图填充
-                patch.set_edgecolor("#2E86C1")  # 分支玫瑰图边框（更深）
-                patch.set_alpha(0.65)           # 与迹线玫瑰图透明度一致
-        zh_fonts = plt.rcParams.get("font.sans-serif", [])
-        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
-        # 覆盖 fractopo 默认标题字体，确保数据源中文名正常显示
-        for fig, title_text in (
-            (fig1, f"迹线玫瑰图 - {name}"),
-            (fig2, f"分支玫瑰图 - {name}"),
-        ):
-            for one_ax in fig.axes:
-                one_ax.set_title(title_text, fontfamily=font_family, fontsize=14)
-
-        self.embed_figure(
-            [fig1, fig2],
-            descriptions=[
-                "迹线方位玫瑰图：极坐标下各走向区间频数，峰值方向即优势构造走向。",
-                "分支方位玫瑰图：对拓扑分支线段统计走向，可与迹线玫瑰图对比构造与分解后差异。",
-            ],
-        )
+        def _render(network):
+            azimuth_bin_dict, fig1, ax = network.plot_trace_azimuth()
+            azimuth_bin_dict, fig2, ax = network.plot_branch_azimuth()
+            for one_ax in fig1.axes:
+                for patch in one_ax.patches:
+                    patch.set_facecolor("#2C3E50")
+                    patch.set_edgecolor("black")
+                    patch.set_alpha(0.65)
+            for one_ax in fig2.axes:
+                for patch in one_ax.patches:
+                    patch.set_facecolor("#AED6F1")
+                    patch.set_edgecolor("#2E86C1")
+                    patch.set_alpha(0.65)
+            zh_fonts = plt.rcParams.get("font.sans-serif", [])
+            font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+            for fig, title_text in ((fig1, f"迹线玫瑰图 - {name}"), (fig2, f"分支玫瑰图 - {name}")):
+                for one_ax in fig.axes:
+                    one_ax.set_title(title_text, fontfamily=font_family, fontsize=14)
+            self.embed_figure(
+                [fig1, fig2],
+                descriptions=[
+                    "迹线方位玫瑰图：极坐标下各走向区间频数，峰值方向即优势构造走向。",
+                    "分支方位玫瑰图：对拓扑分支线段统计走向，可与迹线玫瑰图对比构造与分解后差异。",
+                ],
+            )
+        self._run_with_network(_render)
 
     def run_sanyuantu(self):
         warnings.filterwarnings("ignore")
-
         setup_matplotlib_chinese()
-
-        network, nw_err = try_network(
-            traces,
-            area,
-            name=name,
-            determine_branches_nodes=True,
-            truncate_traces=True,
-            circular_target_area=False,
-            snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-
-        fig1, ax1, tax1 = network.plot_xyi()
-        ax1.axis('off')
-        fig1.set_size_inches(10, 10)
-        # 三角与顶点标签留出边距，避免 X/Y/I 贴边被裁切
-        ax1.set_position([0.13, 0.13, 0.62, 0.58])
-        fig1.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
-
-        fig2, ax2, tax2 = network.plot_branch()
-        ax2.axis('off')
-        fig2.set_size_inches(10, 10)
-        ax2.set_position([0.13, 0.13, 0.62, 0.58])
-        fig2.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
-
-        _style_ternary_plot(fig1, tax1)
-        _style_ternary_plot(fig2, tax2)
-        _polish_fractopo_ternary_labels(fig1)
-        _polish_fractopo_ternary_labels(fig2)
-
-        # 顶部中文标题 + 图例中数据源名称（fractopo 默认 DejaVu Sans 会导致中文成方框）
-        zh_fonts = plt.rcParams.get("font.sans-serif", [])
-        font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
-        for fig, ttl in (
-            (fig1, f"节点类型三元图（XYI）- {name}"),
-            (fig2, f"分支类型三元图（CC/CI/II）- {name}"),
-        ):
-            fig.suptitle(ttl, fontsize=14, fontfamily=font_family, y=0.96)
-            for ax in fig.axes:
-                leg = ax.get_legend()
-                if leg is not None:
+        def _render(network):
+            fig1, ax1, tax1 = network.plot_xyi()
+            ax1.axis('off')
+            fig1.set_size_inches(10, 10)
+            ax1.set_position([0.13, 0.13, 0.62, 0.58])
+            fig1.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
+            fig2, ax2, tax2 = network.plot_branch()
+            ax2.axis('off')
+            fig2.set_size_inches(10, 10)
+            ax2.set_position([0.13, 0.13, 0.62, 0.58])
+            fig2.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
+            _style_ternary_plot(fig1, tax1)
+            _style_ternary_plot(fig2, tax2)
+            _polish_fractopo_ternary_labels(fig1)
+            _polish_fractopo_ternary_labels(fig2)
+            zh_fonts = plt.rcParams.get("font.sans-serif", [])
+            font_family = zh_fonts[0] if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0 else "Microsoft YaHei"
+            for fig, ttl in (
+                (fig1, f"节点类型三元图（XYI）- {name}"),
+                (fig2, f"分支类型三元图（CC/CI/II）- {name}"),
+            ):
+                fig.suptitle(ttl, fontsize=14, fontfamily=font_family, y=0.96)
+                for ax in fig.axes:
+                    leg = ax.get_legend()
+                    if leg is not None:
+                        for t in leg.get_texts():
+                            t.set_fontfamily(font_family)
+                        title = leg.get_title()
+                        if title is not None:
+                            title.set_fontfamily(font_family)
+                for leg in getattr(fig, "legends", []):
                     for t in leg.get_texts():
                         t.set_fontfamily(font_family)
-                    title = leg.get_title()
-                    if title is not None:
-                        title.set_fontfamily(font_family)
-            for leg in getattr(fig, "legends", []):
-                for t in leg.get_texts():
-                    t.set_fontfamily(font_family)
-
-        self.embed_figure(
-            [fig1, fig2],
-            descriptions=[
-                "节点类型三元图（XYI）：三角形顶点为 X、Y、I 三类节点占比，落在三角形内的点云表示样本整体组成。",
-                "分支类型三元图（CC、CI、II）：三端元为三类分支在数量或长度加权下的比例（定义见 fractopo）。",
-            ],
-        )
+            self.embed_figure(
+                [fig1, fig2],
+                descriptions=[
+                    "节点类型三元图（XYI）：三角形顶点为 X、Y、I 三类节点占比，落在三角形内的点云表示样本整体组成。",
+                    "分支类型三元图（CC、CI、II）：三端元为三类分支在数量或长度加权下的比例（定义见 fractopo）。",
+                ],
+            )
+        self._run_with_network(_render)
 
     def run_guanxi(self):
         warnings.filterwarnings("ignore")
-        network, nw_err = try_network(
-            traces, area, name=name, determine_branches_nodes=True, truncate_traces=True,
-            circular_target_area=False, snap_threshold=0.001,
-        )
-        if nw_err:
-            QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-            return
-        print(f"Azimuth set names: {network.azimuth_set_names}")
-        print(f"Azimuth set ranges: {network.azimuth_set_ranges}")
-        figs, fig_axes = network.plot_azimuth_crosscut_abutting_relationships()
-        # 覆盖 fractopo 默认配色：cross-cut / A→B / B→A
-        relationship_colors = ("#4A5568", "#2B6CB0", "#63B3ED")
-        for fig in figs:
-            for ax in fig.axes:
-                if not hasattr(ax, "containers"):
-                    continue
-                for container in ax.containers:
-                    # 该图每个子图仅有一组3根柱子
-                    if len(container) >= 3:
-                        for patch, color in zip(container[:3], relationship_colors):
-                            patch.set_facecolor(color)
-                            patch.set_edgecolor("black")
-                        break
-                legend = ax.get_legend()
-                if legend is not None:
-                    # 显式同步图例色块，避免与柱体颜色不一致
-                    handles = getattr(legend, "legend_handles", None)
-                    if handles is None:
-                        handles = getattr(legend, "legendHandles", [])
-                    for handle, color in zip(handles, relationship_colors):
-                        if hasattr(handle, "set_facecolor"):
-                            handle.set_facecolor(color)
-                        if hasattr(handle, "set_edgecolor"):
-                            handle.set_edgecolor("black")
-                    leg_txts = legend.get_texts()
-                    if leg_txts:
-                        ax.set_title(
-                            leg_txts[0].get_text(),
-                            fontsize=11,
-                            fontweight="bold",
-                            pad=14,
-                            fontfamily="DejaVu Sans",
-                        )
-                    legend.set_loc("upper left")
-                # 仅给右侧「trace count」侧栏加框，避免整块轴域文字误加框导致拥挤
-                for txt in ax.texts:
-                    if "trace count" in txt.get_text():
-                        txt.set_bbox(
-                            dict(
-                                boxstyle="round,pad=0.35",
-                                facecolor="white",
-                                edgecolor="#9CA3AF",
-                                alpha=0.95,
-                            )
-                        )
-                        txt.set_clip_on(False)
-        for fig in figs:
-            # 标题显示当前数据源名称，并在柱形图上端居中
-            if hasattr(fig, "_suptitle") and fig._suptitle is not None:
-                # 保持中文标题，并沿用全局 matplotlib 中文字体配置
-                fig._suptitle.set_text(str(name))
-                zh_fonts = plt.rcParams.get("font.sans-serif", [])
-                if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0:
-                    fig._suptitle.set_fontfamily(zh_fonts[0])
-                fig._suptitle.set_fontsize(15)
-                fig._suptitle.set_bbox(
-                    dict(boxstyle="round,pad=0.45", facecolor="white", edgecolor="#9CA3AF", alpha=0.95)
+        def _render(network):
+            print(f"Azimuth set names: {network.azimuth_set_names}")
+            print(f"Azimuth set ranges: {network.azimuth_set_ranges}")
+            figs, fig_axes = network.plot_azimuth_crosscut_abutting_relationships()
+            relationship_colors = ("#4A5568", "#2B6CB0", "#63B3ED")
+            for fig in figs:
+                for ax in fig.axes:
+                    if not hasattr(ax, "containers"):
+                        continue
+                    for container in ax.containers:
+                        if len(container) >= 3:
+                            for patch, color in zip(container[:3], relationship_colors):
+                                patch.set_facecolor(color)
+                                patch.set_edgecolor("black")
+                            break
+                    legend = ax.get_legend()
+                    if legend is not None:
+                        handles = getattr(legend, "legend_handles", None)
+                        if handles is None:
+                            handles = getattr(legend, "legendHandles", [])
+                        for handle, color in zip(handles, relationship_colors):
+                            if hasattr(handle, "set_facecolor"):
+                                handle.set_facecolor(color)
+                            if hasattr(handle, "set_edgecolor"):
+                                handle.set_edgecolor("black")
+                        leg_txts = legend.get_texts()
+                        if leg_txts:
+                            ax.set_title(leg_txts[0].get_text(), fontsize=11, fontweight="bold", pad=14, fontfamily="DejaVu Sans")
+                        legend.set_loc("upper left")
+                    for txt in ax.texts:
+                        if "trace count" in txt.get_text():
+                            txt.set_bbox(dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#9CA3AF", alpha=0.95))
+                            txt.set_clip_on(False)
+            for fig in figs:
+                if hasattr(fig, "_suptitle") and fig._suptitle is not None:
+                    fig._suptitle.set_text(str(name))
+                    zh_fonts = plt.rcParams.get("font.sans-serif", [])
+                    if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0:
+                        fig._suptitle.set_fontfamily(zh_fonts[0])
+                    fig._suptitle.set_fontsize(15)
+                    fig._suptitle.set_bbox(dict(boxstyle="round,pad=0.45", facecolor="white", edgecolor="#9CA3AF", alpha=0.95))
+                    fig._suptitle.set_x(0.5)
+                    fig._suptitle.set_y(0.96)
+                    fig._suptitle.set_ha("center")
+                    fig._suptitle.set_va("top")
+                fig.subplots_adjust(left=0.07, right=0.78, top=0.82, bottom=0.14, wspace=0.34)
+                fig.set_size_inches(15, 7.8)
+            if figs:
+                _cap_rel = (
+                    "交叉与相邻关系图：各子图表示两方位集之间交切（cross-cut）与不同方向邻接（abutting）的计数统计；"
+                    "柱色对应图例中关系类型；侧栏为 trace count。翻页可浏览不同方位集组合。"
                 )
-                fig._suptitle.set_x(0.5)
-                fig._suptitle.set_y(0.96)
-                fig._suptitle.set_ha("center")
-                fig._suptitle.set_va("top")
-            fig.subplots_adjust(left=0.07, right=0.78, top=0.82, bottom=0.14, wspace=0.34)
-            fig.set_size_inches(15, 7.8)
-
-        if figs:
-            _cap_rel = (
-                "交叉与相邻关系图：各子图表示两方位集之间交切（cross-cut）与不同方向邻接（abutting）的计数统计；"
-                "柱色对应图例中关系类型；侧栏为 trace count。翻页可浏览不同方位集组合。"
-            )
-            self.embed_figure(figs, descriptions=[_cap_rel] * len(figs))
+                self.embed_figure(figs, descriptions=[_cap_rel] * len(figs))
+        self._run_with_network(_render)
 
     def b(self):
         branches, nodes = branches_and_nodes(traces, area, snap_threshold=0.001)
@@ -2359,103 +2289,129 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def run_lunkuo(self):
         warnings.filterwarnings("ignore")
+        if getattr(self, "_is_rendering_contour", False):
+            print("轮廓/热图任务仍在运行，已忽略重复触发。")
+            return
+        if self.opt <= 0:
+            return
+        if traces is None or area is None or traces.empty:
+            QMessageBox.warning(self, "无数据", "请先切换数据源并确保迹线、研究区文件存在且非空。")
+            return
         print(f"当前选择的绘图选项: {self.opt}")
 
-
-        progress = QtWidgets.QProgressDialog("正在进行空间计算与高清渲染，请耐心等待...", None, 0, 0, self)
-        progress.setWindowTitle("系统运算中")
-        progress.setWindowModality(QtCore.Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)
-        progress.show()
-
+        self._is_rendering_contour = True
+        self._lunkuo_progress = QtWidgets.QProgressDialog("正在进行空间计算与高清渲染，请耐心等待...", None, 0, 0, self)
+        self._lunkuo_progress.setWindowTitle("系统运算中")
+        self._lunkuo_progress.setWindowModality(QtCore.Qt.WindowModal)
+        self._lunkuo_progress.setMinimumDuration(0)
+        self._lunkuo_progress.setCancelButton(None)
+        self._lunkuo_progress.show()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         QtWidgets.QApplication.processEvents()
 
+        # 快照当前绘图选项，避免后台线程运行期间被改变
+        opt_snapshot = self.opt
+
+        # 预处理（轻量，在主线程完成）
         try:
-            traces_local = traces  # 初始化，预处理块内会重新赋值为副本
-
-            try:
-                traces_local = traces.copy()
-                bounds = traces_local.total_bounds
-
-                if area is not None:
-                    minx, miny, maxx, maxy = area.total_bounds
-                    spatial_index = traces_local.sindex
-                    possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
-                    traces_local = traces_local.iloc[possible_matches_index]
-
-                map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
-                dp_tolerance = map_span * 0.002
-
-                if dp_tolerance > 0:
-                    traces_local = traces_local.copy()
-                    traces_local.geometry = traces_local.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
-
-            except Exception as e:
-                print(f"算法预处理跳过。原因: {e}")
-                traces_local = traces.copy()
-
+            traces_local = traces.copy()
             bounds = traces_local.total_bounds
-            export_cfg = _cfg_section("export_grid")
-            dynamic_width = float(self.dspin_grid_step.value()) if hasattr(self, "dspin_grid_step") else 0.0
-            if dynamic_width <= 0:
-                dynamic_width = float(export_cfg.get("cell_width", 0.0) or 0.0)
-            if dynamic_width <= 0:
-                dynamic_width = (bounds[2] - bounds[0]) / 20.0
-            if dynamic_width <= 0:
-                dynamic_width = 100.0
 
-            print(f"正在执行空间拓扑计算 (网格大小: {dynamic_width:.4f})...")
-            QtWidgets.QApplication.processEvents()
+            if area is not None:
+                minx, miny, maxx, maxy = area.total_bounds
+                spatial_index = traces_local.sindex
+                possible_matches_index = list(spatial_index.intersection((minx, miny, maxx, maxy)))
+                traces_local = traces_local.iloc[possible_matches_index]
 
-            network, nw_err = try_network(
+            map_span = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+            dp_tolerance = map_span * 0.002
+            if dp_tolerance > 0:
+                traces_local = traces_local.copy()
+                traces_local.geometry = traces_local.geometry.simplify(tolerance=dp_tolerance, preserve_topology=True)
+        except Exception as e:
+            print(f"算法预处理跳过。原因: {e}")
+            traces_local = traces.copy()
+
+        bounds = traces_local.total_bounds
+        export_cfg = _cfg_section("export_grid")
+        dynamic_width = float(self.dspin_grid_step.value()) if hasattr(self, "dspin_grid_step") else 0.0
+        if dynamic_width <= 0:
+            dynamic_width = float(export_cfg.get("cell_width", 0.0) or 0.0)
+        if dynamic_width <= 0:
+            dynamic_width = (bounds[2] - bounds[0]) / 20.0
+        if dynamic_width <= 0:
+            dynamic_width = 100.0
+
+        print(f"正在执行空间拓扑计算 (网格大小: {dynamic_width:.4f})...")
+
+        # 耗时的拓扑计算放入后台线程，避免主线程阻塞被 macOS 强杀
+        area_snapshot = area.copy() if area is not None else None
+        name_snapshot = name
+
+        def _bg_compute():
+            nw, nw_err = try_network(
                 traces_local,
-                area,
-                name=name,
+                area_snapshot,
+                name=name_snapshot,
                 determine_branches_nodes=True,
                 truncate_traces=True,
                 circular_target_area=False,
                 snap_threshold=0.001,
             )
             if nw_err:
-                print(f"❌ {nw_err}")
-                QMessageBox.warning(self, "无法构建断裂网络", nw_err)
-                return
+                raise RuntimeError(nw_err)
+            sg = nw.contour_grid(cell_width=dynamic_width)
+            return nw, sg
 
-            sampled_grid = network.contour_grid(cell_width=dynamic_width)
+        def _on_compute_done(result):
+            network, sampled_grid = result
             print("拓扑网格计算完成，准备渲染！")
+            if hasattr(self, "_lunkuo_progress") and self._lunkuo_progress:
+                self._lunkuo_progress.setLabelText("计算完成，正在生成高清平滑图像...")
+                QtWidgets.QApplication.processEvents()
+            try:
+                if opt_snapshot == 1:
+                    self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
+                elif opt_snapshot == 2:
+                    self._plot_contour_safe(network, sampled_grid,
+                                            ["Trace Min Length", "Trace Max Length", "Trace Mean Length"])
+                elif opt_snapshot == 3:
+                    self._plot_contour_safe(network, sampled_grid,
+                                            ["Dimensionless Intensity B22", "Dimensionless Intensity P22"])
+                elif opt_snapshot == 4:
+                    self._plot_contour_safe(network, sampled_grid, "Number of Traces (Real)")
+                elif opt_snapshot == 5:
+                    self._plot_contour_safe(network, sampled_grid,
+                                            ["Branch Min Length", "Branch Max Length", "Branch Mean Length"])
+                elif opt_snapshot == 6:
+                    self._plot_contour_safe(network, sampled_grid, ["Areal Frequency B20", "Areal Frequency P20"])
+                elif opt_snapshot == 7:
+                    self._plot_contour_safe(network, sampled_grid, ["Connections per Trace", "Connections per Branch"])
+                elif opt_snapshot == 8:
+                    self._plot_contour_safe(network, sampled_grid, "Connection Frequency")
+            except Exception as e:
+                print(f"❌ 渲染报错: {str(e)}")
+            finally:
+                _cleanup()
 
-            progress.setLabelText("计算完成，正在生成高清平滑图像...")
-            QtWidgets.QApplication.processEvents()
+        def _on_compute_failed(err_msg):
+            print(f"❌ 运行报错: {err_msg}")
+            QMessageBox.warning(self, "无法构建断裂网络", err_msg)
+            _cleanup()
 
-            # --- 路由分发绘图请求 ---
-            if self.opt == 1:
-                self._plot_contour_safe(network, sampled_grid, ["Fracture Intensity B21", "Fracture Intensity P21"])
-            elif self.opt == 2:
-                self._plot_contour_safe(network, sampled_grid,
-                                        ["Trace Min Length", "Trace Max Length", "Trace Mean Length"])
-            elif self.opt == 3:
-                self._plot_contour_safe(network, sampled_grid,
-                                        ["Dimensionless Intensity B22", "Dimensionless Intensity P22"])
-            elif self.opt == 4:
-                self._plot_contour_safe(network, sampled_grid, "Number of Traces (Real)")
-            elif self.opt == 5:
-                self._plot_contour_safe(network, sampled_grid,
-                                        ["Branch Min Length", "Branch Max Length", "Branch Mean Length"])
-            elif self.opt == 6:
-                self._plot_contour_safe(network, sampled_grid, ["Areal Frequency B20", "Areal Frequency P20"])
-            elif self.opt == 7:
-                self._plot_contour_safe(network, sampled_grid, ["Connections per Trace", "Connections per Branch"])
-            elif self.opt == 8:
-                self._plot_contour_safe(network, sampled_grid, "Connection Frequency")
-
-        except Exception as e:
-            print(f"❌ 运行报错: {str(e)}")
-
-        finally:
+        def _cleanup():
+            self._is_rendering_contour = False
             QtWidgets.QApplication.restoreOverrideCursor()
-            progress.close()
+            if hasattr(self, "_lunkuo_progress") and self._lunkuo_progress:
+                self._lunkuo_progress.close()
+                self._lunkuo_progress = None
+            self._lunkuo_runner = None
+
+        runner = TaskRunner(_bg_compute)
+        runner.finished_ok.connect(_on_compute_done)
+        runner.failed.connect(_on_compute_failed)
+        self._lunkuo_runner = runner  # 防止被 GC
+        runner.start()
 
     def run_ronghe(self):
         if run_fusion_pipeline is None:
