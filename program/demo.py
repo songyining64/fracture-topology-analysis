@@ -5,7 +5,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(1400, 900)
+        MainWindow.resize(1280, 800)
         MainWindow.setWindowTitle("油气区断裂网络连通性智能分析与预测系统 v1.0")
         self.centralwidget = QtWidgets.QWidget(MainWindow)
 
@@ -20,6 +20,8 @@ class Ui_MainWindow(object):
         self.top_frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.top_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border-radius: 5px; }")
         self.top_layout = QtWidgets.QVBoxLayout(self.top_frame)
+        self.top_layout.setSpacing(4)
+        self.top_layout.setContentsMargins(6, 6, 6, 6)
 
         # --- 第零排：数据源切换 ---
         self.row0_layout = QtWidgets.QHBoxLayout()
@@ -77,9 +79,12 @@ class Ui_MainWindow(object):
         self.btn_open_processed_dir.setToolTip("打开导出的聚类/流水线中间结果 CSV 等所在目录。")
         self.btn_cancel_task = QtWidgets.QPushButton("取消任务")
         self.btn_cancel_task.setToolTip("取消正在后台执行的长任务（如一键空间-拓扑融合）。")
+        _row0_btn_style = "QPushButton { font-size: 12px; padding: 2px 6px; }"
+        self.row0_layout.setSpacing(4)
         for b in (self.btn_open_model_dir, self.btn_open_processed_dir, self.btn_cancel_task):
             b.setMinimumHeight(28)
             b.setMaximumHeight(30)
+            b.setStyleSheet(_row0_btn_style)
             self.row0_layout.addWidget(b)
         self.row0_layout.addStretch()
 
@@ -167,9 +172,17 @@ class Ui_MainWindow(object):
             "【长度分布】迹线与分支长度直方图 + 幂律/对数正态等拟合曲线，用于长度标度分析。"
         )
 
+        _sp_expand = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        _row1_style = "QPushButton { font-size: 12px; padding: 2px 4px; }"
+        self.row1_layout.setSpacing(4)
         for btn in [self.btn_yuantu, self.btn_fenleihou, self.btn_relitu, self.btn_azimuth,
                     self.btn_meiguitu, self.btn_sanyuantu, self.btn_guanxi, self.btn_b, self.btn_a]:
-            btn.setMinimumHeight(35)
+            btn.setMinimumHeight(32)
+            btn.setMaximumHeight(36)
+            btn.setSizePolicy(_sp_expand)
+            btn.setStyleSheet(_row1_style)
             self.row1_layout.addWidget(btn)
         self.top_layout.addLayout(self.row1_layout)
 
@@ -198,9 +211,12 @@ class Ui_MainWindow(object):
 
         self.combo_topo.setStyleSheet(_combo_style)
         self.combo_params.setStyleSheet(_combo_style)
+        self.row2_layout.setSpacing(4)
         for widget in [self.combo_topo, self.combo_params, self.btn_tuopushuxing]:
-            widget.setMinimumHeight(35)
+            widget.setMinimumHeight(32)
+            widget.setMaximumHeight(36)
             self.row2_layout.addWidget(widget)
+        self.row2_layout.addStretch()
         self.top_layout.addLayout(self.row2_layout)
 
         # --- 第三排：机器学习与属性融合 ---
@@ -255,15 +271,28 @@ class Ui_MainWindow(object):
 
         self.combo_fusion.setStyleSheet(_combo_style)
         self.combo_shap_features.setStyleSheet(_combo_style)
+        _row3_btn_style = "QPushButton { font-size: 12px; padding: 2px 4px; }"
+        self.row3_layout.setSpacing(4)
+        # 融合下拉宽度限制，避免撑太宽
+        self.combo_fusion.setMaximumWidth(150)
+        self.combo_shap_features.setMinimumWidth(140)
+        self.combo_shap_features.setMaximumWidth(200)
         for widget in [self.combo_fusion, self.btn_ronghe, self.btn_guoji_weighted, self.btn_guoji_compare,
                        self.btn_k_helper,
                        self.btn_guoji_train]:
-            widget.setMinimumHeight(35)
+            widget.setMinimumHeight(32)
+            widget.setMaximumHeight(36)
+            if isinstance(widget, QtWidgets.QPushButton):
+                widget.setSizePolicy(_sp_expand)
+                widget.setStyleSheet(_row3_btn_style)
             self.row3_layout.addWidget(widget)
         self.row3_layout.addWidget(self.lbl_shap_features)
         self.row3_layout.addWidget(self.combo_shap_features)
         for widget in [self.btn_guoji_shap, self.btn_spatial, self.btn_export_results]:
-            widget.setMinimumHeight(35)
+            widget.setMinimumHeight(32)
+            widget.setMaximumHeight(36)
+            widget.setSizePolicy(_sp_expand)
+            widget.setStyleSheet(_row3_btn_style)
             self.row3_layout.addWidget(widget)
         self.top_layout.addLayout(self.row3_layout)
 
@@ -348,7 +377,10 @@ class Ui_MainWindow(object):
         self.canvas_layout = QtWidgets.QVBoxLayout(self.canvas_container)
         self.canvas_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.splitter.setSizes([430, 970])
+        # 按比例 30:70 分配左右，实际像素由 main.py 在 show() 后根据窗口宽度重设
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 7)
+        self.splitter.setSizes([390, 910])
         self.main_vbox.addWidget(self.splitter, 1)
 
         MainWindow.setCentralWidget(self.centralwidget)

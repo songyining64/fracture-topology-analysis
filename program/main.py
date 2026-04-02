@@ -2693,7 +2693,38 @@ def exception_hook(exctype, value, tb):
 if __name__ == "__main__":
     sys.excepthook = exception_hook  # 挂载防崩溃
 
+    # 开启高 DPI 缩放，避免在高分屏/Retina 屏幕上窗口过小或模糊
+    QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
+
     window = MainWindow()
+
+    # 根据当前屏幕可用区域自动调整窗口大小
+    screen = app.primaryScreen()
+    available = screen.availableGeometry()
+    sw, sh = available.width(), available.height()
+
+    # 目标尺寸：屏幕可用区域的 92%，但不低于 1100×700
+    target_w = max(1100, int(sw * 0.92))
+    target_h = max(700, int(sh * 0.92))
+    # 同时不超过屏幕可用区域
+    target_w = min(target_w, sw)
+    target_h = min(target_h, sh)
+
+    window.resize(target_w, target_h)
+
+    # 居中显示
+    x = available.x() + (sw - target_w) // 2
+    y = available.y() + (sh - target_h) // 2
+    window.move(x, y)
+
     window.show()
+
+    # show() 后按实际窗口内容宽度重设左右 splitter 比例（30% 左面板 / 70% 右画板）
+    # 减去主布局左右边距（各 10px）
+    inner_w = target_w - 20
+    window.splitter.setSizes([int(inner_w * 0.30), int(inner_w * 0.70)])
+
     sys.exit(app.exec_())

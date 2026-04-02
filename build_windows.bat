@@ -77,6 +77,11 @@ if %errorlevel% neq 0 (
 :: ── 执行打包 ──────────────────────────────────────────
 echo.
 echo [3/4] 执行 PyInstaller 打包（约需 3-8 分钟）...
+
+:: 指定 matplotlib 缓存目录，避免权限问题导致字体缓存构建卡住
+if not exist ".mplconfig_build" mkdir .mplconfig_build
+set MPLCONFIGDIR=%CD%\.mplconfig_build
+
 pyinstaller build_app.spec --noconfirm
 if %errorlevel% neq 0 (
     echo.
@@ -92,13 +97,13 @@ echo [4/4] 打包完成！
 echo ========================================
 echo.
 echo 输出目录：
-echo   dist\油气区断裂网络连通性智能分析与预测系统\
+echo   dist\油气区断裂网络连通性智能分析与预测系统_Windows\
 echo.
 echo 可执行文件：
-echo   dist\油气区断裂网络连通性智能分析与预测系统\油气区断裂网络连通性智能分析与预测系统.exe
+echo   dist\油气区断裂网络连通性智能分析与预测系统_Windows\油气区断裂网络连通性智能分析与预测系统_Windows.exe
 echo.
 echo 分发说明：
-echo   将整个 dist\油气区断裂网络连通性智能分析与预测系统\ 文件夹打包压缩后分发
+echo   将整个 dist\油气区断裂网络连通性智能分析与预测系统_Windows\ 文件夹打包压缩后分发
 echo   不可只发送 .exe 文件，必须连同 _internal\ 文件夹一起分发
 echo.
 pause

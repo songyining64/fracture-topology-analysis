@@ -9,6 +9,7 @@ from PyInstaller.utils.hooks import (
     collect_data_files,
     collect_submodules,
     collect_dynamic_libs,
+    collect_all,
 )
 
 block_cipher = None
@@ -68,8 +69,19 @@ for pkg in [
     except Exception:
         pass
 
+# torch_geometric：必须将 .py 源文件一并打包，否则 TorchScript 运行时
+# 因找不到源码（如 SelectOutput）而抛 RuntimeError 导致 GAT 无法使用。
+try:
+    _pyg_datas, _pyg_bins, _pyg_imports = collect_all(
+        "torch_geometric", include_py_files=True
+    )
+    datas_extra += _pyg_datas
+    binaries_extra = _pyg_bins  # 先占位，后面再 += 其他 binaries
+except Exception:
+    _pyg_imports = []
+    binaries_extra = []
+
 # pyogrio / pyproj / shapely 二进制（.so / .dylib / .dll）
-binaries_extra = []
 for pkg in ["pyogrio", "pyproj", "shapely"]:
     try:
         binaries_extra += collect_dynamic_libs(pkg)
@@ -133,9 +145,6 @@ for pkg in [
     "torch",
     "torch.nn",
     "torch.nn.functional",
-    "torch_geometric",
-    "torch_geometric.data",
-    "torch_geometric.nn",
     "xgboost",
     "shap",
     "umap",
@@ -144,6 +153,9 @@ for pkg in [
     "llvmlite",
 ]:
     hidden_imports.append(pkg)
+
+# torch_geometric 全部子模块（由 collect_all 收集）
+hidden_imports += _pyg_imports
 
 # 本地模块（program/ 下）
 hidden_imports += [
@@ -196,7 +208,15 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # ── 使用 onedir 模式（体积更小、启动更快） ────────────
-APP_NAME = "油气区断裂网络连通性智能分析与预测系统"
+APP_NAME_BASE = "油气区断裂网络连通性智能分析与预测系统"
+
+# 根据平台在名称后追加平台标识
+if sys.platform == "darwin":
+    APP_NAME = f"{APP_NAME_BASE}_Mac"
+elif sys.platform == "win32":
+    APP_NAME = f"{APP_NAME_BASE}_Windows"
+else:
+    APP_NAME = APP_NAME_BASE
 
 exe = EXE(
     pyz,
@@ -235,8 +255,8 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="com.fracture.connectivity",
         info_plist={
-            "CFBundleName": APP_NAME,
-            "CFBundleDisplayName": APP_NAME,
+            "CFBundleName": APP_NAME_BASE,
+            "CFBundleDisplayName": APP_NAME_BASE,
             "CFBundleVersion": "1.2.0",
             "CFBundleShortVersionString": "1.2.0",
             "NSHighResolutionCapable": True,

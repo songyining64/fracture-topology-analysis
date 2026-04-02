@@ -197,7 +197,14 @@ def gat_fusion(
         import torch.nn as nn
         import torch.nn.functional as F
         from torch_geometric.data import Data
-        from torch_geometric.nn import GATConv
+        # 打包环境下 PyG 找不到源文件时会抛 RuntimeError（TorchScript 要求源码）；
+        # 捕获后统一当作未安装处理，降级到全 0 占位。
+        try:
+            from torch_geometric.nn import GATConv
+        except (RuntimeError, OSError) as _pyg_err:
+            raise ImportError(
+                f"PyTorch Geometric 在当前环境下不可用（可能是打包后缺少源码）：{_pyg_err}"
+            )
     except ImportError:
         raise ImportError("GAT 需要 PyTorch 与 PyTorch Geometric：pip install torch torch_geometric")
     if in_channels is None:
@@ -231,20 +238,26 @@ def gat_fusion(
             recon = self.decoder(z)
             return recon, z
 
-    model = GATAutoEncoder().to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_history = []
-    for ep in range(epochs):
-        model.train()
-        opt.zero_grad()
-        recon, z = model(data.x, data.edge_index)
-        loss = F.mse_loss(recon, data.x)
-        loss.backward()
-        opt.step()
-        loss_history.append(loss.item())
-    model.eval()
-    with torch.no_grad():
-        _, z = model(data.x, data.edge_index)
+    try:
+        model = GATAutoEncoder().to(device)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        loss_history = []
+        for ep in range(epochs):
+            model.train()
+            opt.zero_grad()
+            recon, z = model(data.x, data.edge_index)
+            loss = F.mse_loss(recon, data.x)
+            loss.backward()
+            opt.step()
+            loss_history.append(loss.item())
+        model.eval()
+        with torch.no_grad():
+            _, z = model(data.x, data.edge_index)
+    except (RuntimeError, OSError) as _fwd_err:
+        # 打包后 PyG 缺少 .py 源文件，TorchScript 编译时抛 RuntimeError
+        raise ImportError(
+            f"GAT 前向推理失败（打包环境下 PyTorch Geometric 不可用）：{_fwd_err}"
+        )
     Z = z.cpu().numpy()
     if Z.shape[1] == 1:
         Z = Z.ravel()
@@ -285,8 +298,9 @@ def run_fusion_comparison_experiment(
     gat_runtime_error: Optional[str] = None
     try:
         gat_scores, _, gat_metrics = gat_fusion(X, edge_index, epochs=gat_epochs, out_channels=1)
-    except ImportError:
-        gat_scores = np.zeros(n)  # 无 PyG 时用占位
+    except (ImportError, RuntimeError, OSError):
+        # ImportError：未安装 PyG；RuntimeError/OSError：打包后缺少源文件导致 TorchScript 失败
+        gat_scores = np.zeros(n)
         gat_metrics = {}
         gat_import_error = True
     except Exception as e:

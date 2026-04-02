@@ -191,9 +191,9 @@ def run_spatial_topology_fusion_pipeline(
                 epochs=int(fusion_cfg.get("gat_epochs", 80)),
                 out_channels=1,
             )
-        except ImportError:
+        except (ImportError, RuntimeError, OSError) as e:
             gat_scores = None
-            gat_metrics = {"error": "PyTorch / PyTorch Geometric 未安装，GAT 未运行"}
+            gat_metrics = {"error": f"GAT 不可用（已跳过）：{e}"}
         except Exception as e:
             gat_scores = None
             gat_metrics = {"error": f"GAT 运行时失败（已跳过，继续加权融合与 XGBoost）：{e}"}
