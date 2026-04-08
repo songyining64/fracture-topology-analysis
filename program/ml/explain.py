@@ -78,13 +78,13 @@ def shap_feature_importance(
     model,
     X: np.ndarray,
     feature_names: Optional[List[str]] = None,
-    is_tree: bool = True,
+    is_tree: bool = False,  # 强制使用 KernelExplainer 避免 TreeExplainer 的参数问题
     out_plot_path: Optional[str] = None,
     emphasize_first: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
     计算 SHAP 特征重要性，返回每特征 mean(|SHAP|) 及占比。
-    is_tree=True 时用 TreeExplainer（XGBoost/LightGBM），否则用 KernelExplainer（较慢）。
+    强制使用 KernelExplainer 避免 TreeExplainer 的参数问题。
     """
     try:
         import shap
@@ -92,12 +92,10 @@ def shap_feature_importance(
         raise ImportError("请安装 shap: pip install shap")
     if feature_names is None:
         feature_names = [f"f{i}" for i in range(X.shape[1])]
-    if is_tree:
-        explainer = shap.TreeExplainer(model, X)
-        shap_values = explainer.shap_values(X)
-    else:
-        explainer = shap.KernelExplainer(model.predict, X[: min(100, len(X))])
-        shap_values = explainer.shap_values(X)
+    
+    # 强制使用 KernelExplainer 避免 TreeExplainer 的参数问题
+    explainer = shap.KernelExplainer(model.predict, X[: min(100, len(X))])
+    shap_values = explainer.shap_values(X)
     if isinstance(shap_values, list):
         shap_values = shap_values[0]
     shap_values, X, feature_names = _reorder_by_emphasis(
@@ -140,10 +138,13 @@ def shap_dependence_plot(
         raise ImportError("请安装 shap: pip install shap")
     if feature_names is None:
         feature_names = [f"f{i}" for i in range(X.shape[1])]
-    explainer = shap.TreeExplainer(model, X)
+    
+    # 使用 KernelExplainer 避免 TreeExplainer 的参数问题
+    explainer = shap.KernelExplainer(model.predict, X[: min(100, len(X))])
     shap_values = explainer.shap_values(X)
     if isinstance(shap_values, list):
         shap_values = shap_values[0]
+    
     plt.figure(figsize=(6, 4))
     shap.dependence_plot(
         top_feature_index,
@@ -175,16 +176,90 @@ def explain_xgboost(
         from .infer import load_xgboost_model
     except ImportError:
         from infer import load_xgboost_model
-    from feature_engineering import build_feature_matrix
+    from feature_engineering import build_feature_matrix, load_raw
+    
+    # 加载模型
     model = load_xgboost_model(model_path, is_classifier=is_classifier)
-    r = build_feature_matrix(csv_path, feature_columns=feature_columns, out_processed_dir=None)
-    X, names = r["X"], r["feature_names"]
+    
+    # 修复模型参数中的字符串格式数值
+    if hasattr(model, 'get_params'):
+        params = model.get_params()
+        for key, value in params.items():
+            if isinstance(value, str):
+                # 尝试将字符串转换为数值
+                try:
+                    # 移除括号和空格
+                    cleaned_value = value.strip().strip('[]')
+                    # 尝试转换为浮点数
+                    params[key] = float(cleaned_value)
+                except:
+                    pass
+        # 更新模型参数
+        model.set_params(**params)
+    
+    # 加载原始数据
+    df = load_raw(csv_path)
+    
+    # 尝试读取模型训练时保存的特征名称文件
+    model_name = os.path.splitext(os.path.basename(model_path))[0]
+    model_dir = os.path.dirname(model_path)
+    features_file = os.path.join(model_dir, f"{model_name}_features.txt")
+    
+    if os.path.exists(features_file):
+        # 读取模型训练时使用的特征名称
+        with open(features_file, 'r', encoding='utf-8') as f:
+            model_features = [line.strip() for line in f if line.strip()]
+        logger.info(f"从文件读取特征名称: {model_features}")
+        # 确保所有特征都在数据中
+        available = [c for c in model_features if c in df.columns]
+        if not available:
+            raise ValueError(f"CSV 中未找到任何模型训练时使用的特征列: {model_features}")
+        if len(available) != len(model_features):
+            missing = [c for c in model_features if c not in df.columns]
+            logger.warning(f"部分特征在CSV中未找到: {missing}")
+    else:
+        # 如果没有特征文件，使用提供的特征列或默认特征列
+        if feature_columns is None:
+            from feature_engineering import DEFAULT_FEATURE_COLUMNS
+            feature_columns = DEFAULT_FEATURE_COLUMNS
+        available = [c for c in feature_columns if c in df.columns]
+        if not available:
+            raise ValueError(f"CSV 中未找到任何特征列: {feature_columns}")
+    
+    # 转换特征数据
+    def convert_to_float(value):
+        if isinstance(value, str):
+            # 移除括号和空格
+            value = value.strip().strip('[]')
+            try:
+                return float(value)
+            except:
+                return 0.0
+        elif pd.isna(value):
+            return 0.0
+        else:
+            return float(value)
+    
+    X_raw = df[available].copy()
+    for col in X_raw.columns:
+        X_raw[col] = X_raw[col].apply(convert_to_float)
+    
+    X = X_raw.values.astype(np.float64)
+    names = available
+    
+    # 应用相同的预处理步骤
+    from feature_engineering import handle_outliers, normalize
+    X = handle_outliers(X, method="iqr")
+    X_norm, _ = normalize(X, method="standard")
+    
+    logger.info(f"SHAP 分析使用的特征数量: {X_norm.shape[1]}")
+    
     out_plot = os.path.join(out_dir, "shap_summary.png") if out_dir else None
     df_imp = shap_feature_importance(
         model,
-        X,
+        X_norm,
         feature_names=names,
-        is_tree=True,
+        is_tree=False,  # 使用 KernelExplainer 避免参数问题
         out_plot_path=out_plot,
         emphasize_first=emphasize_first,
     )
@@ -199,12 +274,13 @@ def explain_xgboost(
                 top_idx = list(names).index(top_name)
                 shap_dependence_plot(
                     model,
-                    X,
+                    X_norm,  # 使用归一化后的数据
                     feature_names=names,
                     top_feature_index=top_idx,
                     save_path=dep_path,
                 )
                 df_imp.attrs["dependence_plot"] = dep_path
+                logger.info("SHAP Dependence 图已生成：%s", dep_path)
             except Exception as e:
                 logger.warning("SHAP dependence 图生成失败：%s", e)
     return df_imp

@@ -178,6 +178,24 @@ def train_xgboost_regression(
         import xgboost as xgb
     except ImportError:
         raise ImportError("请安装 xgboost: pip install xgboost")
+    
+    # 清理参数，确保所有数值参数都是正确的类型
+    def clean_param(value):
+        if isinstance(value, str):
+            # 移除括号和空格
+            cleaned_value = value.strip().strip('[]')
+            # 尝试转换为浮点数
+            try:
+                return float(cleaned_value)
+            except:
+                return value
+        return value
+    
+    # 清理 xgb_params
+    cleaned_xgb_params = {k: clean_param(v) for k, v in xgb_params.items()}
+    # 清理 train_cfg 中的参数
+    cleaned_train_cfg = {k: clean_param(v) for k, v in train_cfg.items()}
+    
     logger.info("开始训练 XGBoost：samples=%s features=%s n_splits=%s test_size=%s", len(X), X.shape[1], n_splits, test_size)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state
@@ -187,20 +205,20 @@ def train_xgboost_regression(
     for train_idx, val_idx in kf.split(X_train):
         Xt, Xv = X_train[train_idx], X_train[val_idx]
         yt, yv = y_train[train_idx], y_train[val_idx]
-        model = xgb.XGBRegressor(random_state=random_state, **xgb_params)
+        model = xgb.XGBRegressor(random_state=random_state, **cleaned_xgb_params)
         model.fit(Xt, yt)
         pred = model.predict(Xv)
         cv_metrics.append(regression_metrics(yv, pred))
     cv_agg = _aggregate_metric_list(cv_metrics)
     # 用划分出的训练集（全量数据的 1-test_size 部分）训练最终模型，测试集仅用于评估，不参与训练
-    model = xgb.XGBRegressor(random_state=random_state, **xgb_params)
+    model = xgb.XGBRegressor(random_state=random_state, **cleaned_xgb_params)
     model.fit(X_train, y_train)
     test_pred = model.predict(X_test)
     test_metrics = regression_metrics(y_test, test_pred)
     baseline_metrics = train_regression_baselines(X_train, X_test, y_train, y_test, random_state=random_state)
-    sigma = float(train_cfg.get("prediction_interval_sigma", 1.96))
+    sigma = float(cleaned_train_cfg.get("prediction_interval_sigma", 1.96))
     resid_std = float(np.std(y_test - test_pred, ddof=0)) if len(y_test) else 0.0
-    conformal_alpha = float(train_cfg.get("conformal_alpha", 0.1))
+    conformal_alpha = float(cleaned_train_cfg.get("conformal_alpha", 0.1))
     conf_qhat = 0.0
     conf_cov_test = 0.0
     try:

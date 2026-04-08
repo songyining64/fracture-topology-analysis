@@ -92,9 +92,30 @@ def _runtime_cfg():
     return fe_cfg, logger
 
 
+def _clean_numeric_string(s):
+    """清理字符串形式的数值，如"[7.743774E-4]"，返回纯数值。"""
+    if isinstance(s, str):
+        # 移除括号和空格
+        s = s.strip().strip('[]')
+        try:
+            return float(s)
+        except:
+            return 0.0
+    elif pd.isna(s):
+        return 0.0
+    else:
+        return float(s)
+
 def load_raw(csv_path: str) -> pd.DataFrame:
     """加载原始网格 CSV。"""
-    return pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path)
+    # 清理所有列中的字符串数值并转换为数值类型
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].apply(_clean_numeric_string)
+        # 确保所有列都是数值类型
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    return df
 
 
 def normalize(
@@ -212,9 +233,29 @@ def build_feature_matrix(
     X_raw = df[available].copy()
     # fillna 前记录真正全为 NaN 的行，避免把合法零值行误删
     _all_nan_mask = X_raw.isna().all(axis=1)
-    X = X_raw.fillna(0.0).values.astype(np.float64)
+    # 确保所有数据都能正确转换为数值
+    def convert_to_float(value):
+        if isinstance(value, str):
+            # 移除括号和空格
+            value = value.strip().strip('[]')
+            try:
+                return float(value)
+            except:
+                return 0.0
+        elif pd.isna(value):
+            return 0.0
+        else:
+            return float(value)
+    
+    # 对每个元素应用转换函数
+    for col in X_raw.columns:
+        X_raw[col] = X_raw[col].apply(convert_to_float)
+    
+    X = X_raw.values.astype(np.float64)
     y = None
     if target_column and target_column in df.columns:
+        # 对目标列也应用相同的转换
+        df[target_column] = df[target_column].apply(convert_to_float)
         y = df[target_column].values.astype(np.float64)
         valid = ~np.isnan(y)
         X, y = X[valid], y[valid]

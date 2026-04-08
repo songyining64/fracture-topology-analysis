@@ -20,6 +20,9 @@ from typing import Dict, Any, Optional, List
 import numpy as np
 import pandas as pd
 
+# 定义 PROGRAM_DIR 变量
+_PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+
 from feature_engineering import (
     build_feature_matrix,
     DEFAULT_FEATURE_COLUMNS,

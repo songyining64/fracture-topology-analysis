@@ -55,12 +55,23 @@ def _runtime_cfg():
     return clustering_cfg, fusion_cfg, logger
 
 
+def _clean_numeric_string(s):
+    """清理字符串形式的数值，如"[7.743774E-4]"，返回纯数值。"""
+    if isinstance(s, str):
+        # 移除括号和空格
+        s = s.strip().strip('[]')
+    return s
+
 def load_and_prepare(
     csv_path: str,
     feature_columns: Optional[List[str]] = None,
     drop_all_nan: bool = True,
 ) -> Tuple[pd.DataFrame, np.ndarray, List[str]]:
     df = pd.read_csv(csv_path)
+    # 清理所有列中的字符串数值
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].apply(_clean_numeric_string)
     if feature_columns is None:
         feature_columns = DEFAULT_FEATURE_COLUMNS
     available = [c for c in feature_columns if c in df.columns]
@@ -72,7 +83,8 @@ def load_and_prepare(
         valid = ~all_nan_mask
         X_raw = X_raw.loc[valid]
         df = df.loc[valid].copy()
-    X = X_raw.fillna(0.0)
+    # 确保所有数据都能正确转换为数值
+    X = X_raw.apply(pd.to_numeric, errors='coerce').fillna(0.0)
     return df, X.values.astype(np.float64), available
 
 
