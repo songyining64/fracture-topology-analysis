@@ -2,6 +2,8 @@
 
 **油气区断裂网络连通性智能分析与预测系统**面向**油气勘探工区**，将 **fractopo 断裂网络拓扑**与 **连通性相关指标**（如分支/迹线连接度、连接频率等）和 **机器学习预测**放在同一套桌面工作流中：从原始迹线 + 研究区到网格化拓扑属性、多维融合与聚类，再到 XGBoost 等指标预测与 SHAP 解释，实现「看得清（可视化）—算得准（建模）—讲得明（解释）」。默认示例数据为塔里木盆地英买 2（MY）。
 
+**分发形态：** 本仓库支持 **macOS（`.app`）** 与 **Windows（文件夹内 `.exe` + `_internal`）** 的 PyInstaller 打包；**界面与业务逻辑在两端一致**，仅系统级差异（路径、安全提示等）可能不同。
+
 ---
 
 ## 一、作品简介
@@ -17,6 +19,7 @@
 当前默认数据为**塔里木盆地英买2（MY）**（`program/MY/` 迹线与研究区；网格 CSV 可导出用于 GIS 与进一步分析）。其他工区可在本地自行扩展 `DATA_SOURCES`，与仓库默认配置无关。
 
 ---
+
 ## 二、开源代码与组件使用情况说明
 
 ### 2.1 核心依赖（开源组件）
@@ -58,55 +61,135 @@
 
 ---
 
-## 三、作品安装说明
+## 三、安装、配置与使用（桌面安装包用户）
 
-### 3.1 环境要求
+本节面向 **已拿到打包产物** 的使用者（**不**需要在本机安装 Python）。若你从源码运行，请直接看 **第四节**。
 
-- Python ≥ 3.9（推荐 3.10 或 3.11）
-- Windows / macOS / Linux
+### 3.1 macOS（`.app`）
 
-### 3.2 安装步骤
+1. **安装**：将 **`油气区断裂网络连通性智能分析与预测系统_Mac.app`**（或发行方提供的同名 `.app`）拖入 **「应用程序」** 文件夹，从 **启动台** 或 **访达 → 应用程序** 中启动。  
+   - 若应用来自网络下载，首次打开请在图标上 **右键 → 打开**，或在 **系统设置 → 隐私与安全性** 中允许运行。  
+   - **不要长期从「下载」文件夹直接双击运行**：系统可能启用 App Translocation，导致应用包处于只读挂载，写入日志或缓存失败。
+2. **配置**：默认读取打包在应用内的 `program/config.yaml` 及示例数据。若发行方说明支持用户配置目录，请以随包说明为准；一般可在界面中调整 **聚类 k、训练目标列、网格步长** 等（部分项会覆盖配置文件默认值）。
+3. **使用**：启动后在上方的 **数据源** 中选择工区；**地图与拓扑图** 依赖 `program/MY/` 等随包数据；**融合 / 机器学习 / SHAP / 一键流水线** 依赖对应区域的 **网格 CSV**（若包内已带 `program/Yingmai 2 area in Tarim Basin.csv` 可直接使用，否则需按说明导出或替换数据）。  
+4. **详细说明**：界面按钮与推荐操作顺序见根目录 **`功能说明.md`**；命令行脚本与依赖说明见 **`运行说明.md`**。
+
+### 3.2 Windows（文件夹分发）
+
+1. **安装**：解压发行方提供的 **整个文件夹**（内含 **`.exe`** 与 **`_internal`** 等子目录）。**勿只拷贝单个 `.exe`**，必须与 **`_internal`** 保持相对位置不变，否则无法启动。
+2. **启动**：双击主程序 **`.exe`**。若出现 **Windows 安全中心 / SmartScreen** 提示，选择「仍要运行」或按发行方说明添加信任。
+3. **配置与使用**：与 macOS 相同逻辑——数据源、网格 CSV、界面参数与 **`program/config.yaml`** 的关系一致；详细操作见 **`功能说明.md`**、**`运行说明.md`**。
+4. **构建说明**：若在 **本机从源码重新打包** Windows 版，见 **第五节** 与 **`Windows打包说明.md`**。
+
+### 3.3 平台对照
+
+| 项目 | macOS | Windows |
+|------|--------|---------|
+| 典型产物 | `.app` 或 `dist/` 下 onedir 文件夹 | `dist\油气区断裂网络连通性智能分析与预测系统\` 内含 `.exe` + `_internal` |
+| 功能与界面 | 与源码运行一致 | 与 macOS、源码运行一致 |
+| 注意 | 放入「应用程序」再运行更稳妥 | 整夹分发，勿删 `_internal` |
+
+---
+
+## 四、从源码安装与运行（开发者）
+
+适用于 **克隆仓库、二次开发或论文复现**，需自行安装 Python 环境。
+
+### 4.1 环境要求
+
+- Python **3.10 / 3.11**（与 `environment.yml`、打包脚本推荐版本一致；**3.11** 为打包脚本首选）
+- Windows / macOS / Linux 均可运行源码
+
+### 4.2 安装依赖
 
 ```bash
-# 1. 克隆或下载项目
 cd 断裂拓扑分析
 
-# 2. 创建虚拟环境（推荐）
+# 方式 A：venv + pip（常用）
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-
-# 3. 安装依赖
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-若希望按**经过测试的版本组合**直接复现，推荐使用仓库根目录的 `environment.yml`：
+若希望按**经过测试的版本组合**复现，推荐使用 **`environment.yml`**：
 
 ```bash
 conda env create -f environment.yml
 conda activate fracture-connectivity
 ```
 
-### 3.3 运行主界面
+`requirements.txt` 已包含 `torch`、`umap-learn`、`torch-geometric` 等，与 GUI 中自编码器、VAE、UMAP、GAT 等高级功能一致；若安装失败，可按各库官方说明补装。
+
+### 4.3 启动主界面（推荐）
+
+在**项目根目录**执行（路径相对根目录，跨平台一致）：
 
 ```bash
-cd program
-python main.py
+python run.py
 ```
-也可在项目根目录一条命令启动（无需先 cd program）：
-```bash
-py program\main.py
-```
-### 3.4 数据准备
 
-- 迹线与研究区数据置于 `program/MY/`（英买 2）；若扩展多工区可增设子目录并在 `DATA_SOURCES` 中配置
-- 融合/ML 需先运行网格导出生成 CSV：
+也可使用：
+
+- macOS / Linux：`bash run.sh`
+- Windows：双击 **`run.bat`**
+
+等价方式：`cd program` 后 `python main.py`，或在根目录 `py program/main.py`（Windows 若 `python` 未进 PATH，可用 `py`）。
+
+### 4.4 数据准备
+
+- 迹线与研究区示例在 **`program/MY/`**；扩展多工区可在代码中的 `DATA_SOURCES` 配置。
+- **融合 / 机器学习** 需先有网格 CSV，可在 `program/` 下执行：
   ```bash
-  python export_grid_csv.py MY   # 英买 2 网格 CSV（默认参数亦可省略）
+  python export_grid_csv.py MY
   ```
+  生成（或更新）与英买 2 对应的网格 CSV（默认输出名见脚本与 `config.yaml`）。
+
+### 4.5 使用提示（源码与安装包相同）
+
+在界面中选择数据源，使用「原断裂数据地图」等做拓扑可视化；「一键空间-拓扑融合」等完整 ML 流程需 **网格 CSV 就绪**。聚类结果可导出带 `cluster_id` 的 CSV/GPKG；训练后可导出预测值、预测区间及 SHAP 表。更细的按钮说明见 **`功能说明.md`**。
 
 ---
 
-### 3.5 本系统如何定义和量化断裂网络连通性
+## 五、构建桌面安装包（macOS / Windows）
+
+用于 **在本机从源码生成可分发的 `.app` 或 Windows 程序文件夹**。  
+**重要：PyInstaller 必须在目标操作系统上执行**——在 macOS 上只能打 macOS 包，在 Windows 上只能打 Windows 包，**不能交叉编译**。
+
+### 5.1 通用前提
+
+- 已安装 **Python 3.11**（推荐，与 `build_mac.sh` / `build_windows.bat` 一致）
+- 磁盘与网络：首次安装依赖体积较大（含 PyTorch 等），请预留足够空间
+- 打包前建议已能 **`pip install -r requirements.txt`** 并成功 **`python run.py`** 跑通 GUI
+
+### 5.2 macOS
+
+在仓库根目录执行：
+
+```bash
+bash build_mac.sh
+```
+
+脚本会创建 **`.venv_mac_build`**、安装依赖与 **PyInstaller**，并执行 **`build_app.spec`**。完成后常见输出在 **`dist/`** 下，例如 **`油气区断裂网络连通性智能分析与预测系统_Mac.app`** 及同名 onedir 文件夹（具体以 `build_app.spec` 与脚本 echo 为准）。  
+**分发**：将 **`.app`** 或 **整个 onedir 文件夹** 压缩后分发给其他 Mac 用户。
+
+### 5.3 Windows
+
+在 **Windows** 机器上进入仓库根目录，双击或命令行运行：
+
+```bat
+build_windows.bat
+```
+
+将创建 **`.venv_win_build`** 并完成依赖安装与打包；产物通常在 **`dist\油气区断裂网络连通性智能分析与预测系统\`** 下（**`.exe` + `_internal`**）。  
+**详细步骤、路径与排错**见 **`Windows打包说明.md`**。
+
+### 5.4 与手动 PyInstaller 的关系
+
+仓库以 **`build_app.spec`** 集中维护打包选项（数据文件、隐藏导入等）。若仅做试验，也可在已激活环境中执行 `pyinstaller build_app.spec --noconfirm`，但仍建议优先使用 **`build_mac.sh` / `build_windows.bat`** 以保证环境一致。
+
+---
+
+## 六、本系统如何定义和量化断裂网络连通性
 
 在本项目中，「连通性」主要指**断裂网络在几何–拓扑上的连接难易程度**，由 fractopo 在网格尺度上输出的、可直接进入机器学习的一套标量指标来表示：
 
@@ -118,7 +201,9 @@ py program\main.py
 
 > 注意：特征工程阶段可能因方差过小或互信息筛选会**暂时去掉**某一连通列；若 SHAP 表中没有某项，通常表示该列未进入最终模型特征子集。
 
-### 3.6 在 QGIS / ArcGIS 中快速使用导出图层
+---
+
+## 七、在 QGIS / ArcGIS 中快速使用导出图层
 
 1. **加载 GPKG**：在 QGIS 中「添加矢量图层」选择导出的 `.gpkg`；聚类图层名形如 `clusters_pca` / `clusters_umap`，预测图层名为 `predictions_xgb`（XGBoost 预测结果）；属性表中包含 `cluster_id`、`cluster_name`（若由融合流程生成）、`prediction_rank`、`risk_level`（低/中/高）等字段。ArcGIS Pro 使用「添加数据」同样可载入同一 GPKG。
 2. **按 cluster_id 着色**：图层属性 → 符号化 → 分类 / 唯一值 → 字段选 `cluster_id`；可同时**叠加井位 shapefile/geojson** 作为最上层点要素，检查井–簇归属关系。
@@ -127,9 +212,9 @@ py program\main.py
 
 ---
 
-## 四、设计思路
+## 八、设计思路
 
-### 4.1 整体架构
+### 8.1 整体架构
 
 系统采用「数据层 → 拓扑分析层 → 融合层 → 机器学习层 → 展示层」的分层设计：
 
@@ -152,29 +237,29 @@ py program\main.py
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 核心流程设计
+### 8.2 核心流程设计
 
 1. **拓扑特征提取**：基于 fractopo 对断裂迹线进行分支/节点拓扑分类，按网格采样得到每个单元的拓扑指标（断裂强度、连通率、迹线长度等）
 2. **特征工程**：归一化、异常值处理、方差/互信息筛选，构建标准特征矩阵
 3. **多维融合**：将高维拓扑特征通过 PCA/深度学习方法降至低维，并结合专家规则加权、GAT 图模型进行空间-拓扑融合
 4. **预测与解释**：XGBoost 回归预测目标属性，SHAP 量化各特征贡献，形成可解释的勘探价值评估
 
-### 4.3 配置驱动
+### 8.3 配置驱动
 
-通过 `config.yaml`（`program/` 下）统一管理：
+通过 **`program/config.yaml`** 统一管理：
 
 - 网格导出参数：`export_grid.cell_width`
 - 聚类参数：`clustering.n_clusters`、降维维数、随机种子
 - 训练参数：`train.target_column`、`random_state`、折数、测试集比例、`stability_seeds`（多随机种子下的测试集 R² 波动）、是否导出预测结果
 - SHAP/日志/环境说明：`explain`、`logging`、`environment`
 
-主界面「聚类 k / 训练目标列 / 网格步长」会**覆盖本次运行**所用的参数（摘要区会同时显示 config 默认值与 GUI 当前值）。完整复现仍建议以 `config.yaml` 为准。
+主界面「聚类 k / 训练目标列 / 网格步长」会**覆盖本次运行**所用的参数（摘要区会同时显示 config 默认值与 GUI 当前值）。完整复现仍建议以 **`program/config.yaml`** 为准。
 
 ---
 
-## 五、设计重点与难点
+## 九、设计重点与难点
 
-### 5.1 重点
+### 9.1 重点
 
 | 重点 | 说明 |
 |------|------|
@@ -183,7 +268,7 @@ py program\main.py
 | **融合链路完整性** | 将传统拓扑分析、多种降维方法、图神经网络、树模型、可解释性串联成可复现的端到端流水线 |
 | **跨平台与鲁棒性** | 中文字体跨平台配置、目标列恒定的校验、样本不足时的友好提示、多尺度金字塔在非规则网格下的降级处理 |
 
-### 5.2 难点
+### 9.2 难点
 
 | 难点 | 解决方式 |
 |------|----------|
@@ -196,80 +281,57 @@ py program\main.py
 
 ---
 
-## 六、目录结构概览
+## 十、目录结构概览
 
 ```
 断裂拓扑分析/
-├── README.md                 # 本文件
-├── environment.yml           # 推荐复现实验环境（conda）
-├── requirements.txt          # 依赖列表
-├── 运行说明.md               # 运行指南
-├── 项目说明-模块与使用.md     # 模块详细说明
-├── config.yaml               # 融合/训练等配置（program 下）
+├── README.md                      # 本文件
+├── CHANGELOG.md                   # 版本变更记录
+├── VERSION                        # 版本号
+├── environment.yml                # conda 推荐环境
+├── requirements.txt               # pip 依赖
+├── pyproject.toml                 # 包元数据与可编辑安装
+├── run.py / run.sh / run.bat      # 从源码启动 GUI（根目录）
+├── build_app.spec                 # PyInstaller 规格文件
+├── build_mac.sh                   # macOS 一键打包
+├── build_windows.bat              # Windows 一键打包（需在 Windows 上运行）
+├── Windows打包说明.md             # Windows 打包详细说明
+├── 运行说明.md                    # 运行与脚本命令速查
+├── 功能说明.md                    # 界面按钮与功能详解
+├── 项目说明-模块与使用.md         # 模块说明（若有）
+├── qgis_styles/                   # QGIS 图层样式模板（.qml）
+├── pyi_rth_multiprocessing.py     # PyInstaller 运行时 hook（多进程）
+├── tests/                         # 单元测试
 └── program/
-    ├── main.py               # GUI 主入口
-    ├── demo.py               # 界面布局定义
-    ├── export_grid_csv.py    # 网格 CSV 导出
-    ├── feature_engineering.py# 特征工程
-    ├── fusion_algorithm.py   # 融合算法
-    ├── topology_fusion.py    # 属性融合（PCA/AE/UMAP/VAE）
-    ├── spatial_topology_framework.py  # 空间-拓扑融合流水线
-    ├── multiscale_features.py# 多尺度特征
-    ├── gnn_embeddings.py     # 图神经网络嵌入
-    ├── evaluation.py         # 评估指标
-    ├── ml/                   # 机器学习模块
-    │   ├── train.py          # XGBoost 训练
-    │   ├── tune.py           # Optuna 调参
-    │   ├── infer.py          # 推理
-    │   └── explain.py        # SHAP 解释
-    ├── utils/                # 工具模块
-    ├── MY/                   # 英买 2 区域数据目录（迹线、研究区 GeoJSON）
-    └── new plot/             # 栅格图分析（可选）
+    ├── main.py                    # GUI 主入口
+    ├── demo.py                    # 界面布局
+    ├── config.yaml                # 融合/训练/导出等配置
+    ├── export_grid_csv.py         # 网格 CSV 导出
+    ├── feature_engineering.py
+    ├── fusion_algorithm.py
+    ├── topology_fusion.py
+    ├── spatial_topology_framework.py
+    ├── multiscale_features.py
+    ├── gnn_embeddings.py
+    ├── evaluation.py
+    ├── ml/                        # 训练、调参、推理、SHAP
+    ├── utils/                     # 含 config_validation、export_utils、crs_metric 等
+    ├── tools/join_well_data.py    # 井数据空间联接
+    ├── MY/                        # 英买 2 示例 GeoJSON
+    └── data/processed/            # 运行产出（如 gui_run_history.jsonl，视使用情况生成）
 ```
 
 ---
-## 七、快速开始
 
-```bash
-# 进入项目根目录后安装依赖（建议先创建并激活虚拟环境，见第三节）
-pip install -r requirements.txt
-# 启动主界面（推荐：根目录直接启动，跨平台）
-python run.py
-```
+## 十一、GUI 向导与异步任务
 
-也可使用平台脚本：
-
-```bash
-bash run.sh
-```
-
-Windows:
-
-```bat
-run.bat
-```
-
-使用说明：在界面中选择数据源，点击「原断裂数据地图」等进行拓扑分析；若要跑「一键空间-拓扑融合」等完整 ML 流程，需先对对应区域执行 `export_grid_csv` 生成网格 CSV。聚类结果会导出带 `cluster_id` 的 CSV/GPKG，训练后会导出预测值、预测区间及 SHAP 表。
-
-Windows 若 python 无法运行，可改用：
-```bash
-cd program
-py main.py
-```
-或在项目根目录启动（无需先cd program）
-```bash
-py program/main.py
-```
-
----
-## 八、GUI 向导与异步任务
-
-- 左侧新增「流程向导（网格 → 训练 → 解释）」状态区，实时显示三步是否完成。
-- 「一键空间-拓扑融合」改为后台线程执行，运行时可点击顶部「取消任务」中止，避免界面卡死。
+- 左侧「流程向导（网格 → 训练 → 解释）」状态区，实时显示三步是否完成。
+- 「一键空间-拓扑融合」在后台线程执行，可点击「取消任务」中止，避免界面卡死。
 - 运行后会更新「最近一次运行结果」与 `program/data/processed/gui_run_history.jsonl`。
 
 ---
-## 九、可信度与稳定性输出
+
+## 十二、可信度与稳定性输出
 
 - 训练结果同时给出：
   - 常规随机 CV 指标；
@@ -281,9 +343,10 @@ py program/main.py
 - 每次运行会额外导出 `*_run_manifest.json` 记录工件路径和元信息。
 
 ---
-## 十、QGIS 样式与井数据联接
 
-### 10.1 样式模板
+## 十三、QGIS 样式与井数据联接
+
+### 13.1 样式模板
 
 仓库提供 `qgis_styles/`：
 
@@ -293,7 +356,7 @@ py program/main.py
 
 在 QGIS 中：图层属性 → 样式 → 加载样式（`.qml`）即可一键套用。
 
-### 10.2 井数据联接脚本
+### 13.2 井数据联接脚本
 
 ```bash
 python program/tools/join_well_data.py \
@@ -305,12 +368,10 @@ python program/tools/join_well_data.py \
 脚本会把网格预测字段（如 `prediction_xgboost`、`cluster_id`、`risk_level`、`uncertainty_score`）空间连接到井点。
 
 ---
-## 十一、工程治理与发布
 
-- 启动时会校验 `program/config.yaml` 的关键字段范围与互斥关系，提前提示配置错误。
-- 新增 CSV 契约测试（必备网格顶点列 + 至少一个特征列），降低升级依赖后的隐性破坏。
-- 版本与变更：
-  - `VERSION`
-  - `CHANGELOG.md`
-- 支持 `pip install -e .` 的基础安装结构（见 `pyproject.toml`）。
+## 十四、工程治理与发布
 
+- 启动时会校验 **`program/config.yaml`** 的关键字段范围与互斥关系，提前提示配置错误。
+- 提供 CSV 契约测试（必备网格顶点列 + 至少一个特征列），降低升级依赖后的隐性破坏。
+- 版本与变更见 **`VERSION`**、**`CHANGELOG.md`**。
+- 支持 `pip install -e .`（见 **`pyproject.toml`**）。
