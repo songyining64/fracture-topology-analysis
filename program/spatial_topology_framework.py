@@ -15,13 +15,28 @@
 """
 
 import os
+import sys
 from typing import Dict, Any, Optional, List
 
 import numpy as np
 import pandas as pd
 
-# 定义 PROGRAM_DIR 变量
-_PROGRAM_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _program_dir_this_module() -> str:
+    """
+    本模块所在目录（与打包后的 config.yaml 同层）。
+    不使用模块级全局 _PROGRAM_DIR，避免 PyInstaller / 子线程导入时出现 NameError。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        # onedir：config 通常在 _MEIPASS 根目录，与本模块同层
+        if os.path.isfile(os.path.join(here, "config.yaml")):
+            return here
+        parent = os.path.dirname(here)
+        if os.path.isfile(os.path.join(parent, "config.yaml")):
+            return parent
+    return here
+
 
 from feature_engineering import (
     build_feature_matrix,
@@ -271,8 +286,10 @@ def run_spatial_topology_fusion_pipeline(
             )
             shap_df.attrs["error"] = f"SHAP 计算失败: {e}"
 
+    _cfg_dir = _program_dir_this_module()
+    _cfg_yaml = os.path.join(_cfg_dir, "config.yaml")
     run_meta = build_run_metadata(
-        config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+        config_path=_cfg_yaml,
         extra={"target_column": target_column},
     )
     df_export = enrich_predictions_for_gis(df, pred_col_preferred="xgb_pred")
@@ -291,7 +308,7 @@ def run_spatial_topology_fusion_pipeline(
         out_dir,
         run_id=str(run_meta.get("processing_run_id", "")) or None,
         kind="pipeline",
-        config_path=os.path.join(_PROGRAM_DIR, "config.yaml"),
+        config_path=_cfg_yaml,
         artifacts={"csv": export_paths.get("csv"), "gpkg": export_paths.get("gpkg"), "shap_csv": shap_df.attrs.get("csv_path") if shap_df is not None else None},
         extra={"target_column": target_column},
     )
