@@ -280,7 +280,9 @@ def _polish_fractopo_ternary_labels(fig):
     fractopo 在 X/Y/I 顶点使用白字+粗描边；若再统一套 bbox 会像乱码方框且易被裁切。
     统计信息（多行）单独用圆角白底框；$C_B$ 阈值线用 DejaVu 避免数学符号缺字。
     """
-    corners = frozenset({"X", "Y", "I", "I-C", "C-C", "I-I"})
+    corners = frozenset(
+        {"X", "Y", "I", "I-C", "C-C", "I-I", "X-Y", "CC", "CI", "II"}
+    )
     for ax in fig.axes:
         for txt in ax.texts:
             raw = txt.get_text().strip()
@@ -801,6 +803,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         self.canvas_display_layout = QtWidgets.QVBoxLayout()
         self.canvas_display_layout.setContentsMargins(8, 8, 8, 8)
+        self.canvas_display_layout.setSpacing(0)
         self.canvas_layout.addLayout(self.canvas_display_layout)
 
         self._render_current_figure()
@@ -832,29 +835,36 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         canvas = FigureCanvas(fig)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.canvas_display_layout.addWidget(canvas)
+        self.canvas_display_layout.addWidget(canvas, 1)
         canvas.draw()
 
         cap_text = ""
         if hasattr(self, "_fig_captions") and self.current_fig_idx < len(self._fig_captions):
             cap_text = self._fig_captions[self.current_fig_idx]
-        cap_lbl = QtWidgets.QLabel()
-        cap_lbl.setObjectName("figureCaptionLabel")
-        cap_lbl.setWordWrap(True)
-        cap_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        cap_lbl.setOpenExternalLinks(False)
-        cap_lbl.setStyleSheet(
-            "QLabel#figureCaptionLabel {"
-            " background-color: #f1f3f5; color: #212529; padding: 10px 12px;"
-            " border-radius: 6px; font-size: 13px; border: 1px solid #dee2e6;"
-            "}"
-        )
         if cap_text:
+            cap_lbl = QtWidgets.QLabel()
+            cap_lbl.setObjectName("figureCaptionLabel")
+            cap_lbl.setWordWrap(True)
+            cap_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            cap_lbl.setOpenExternalLinks(False)
+            cap_lbl.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+            cap_lbl.setStyleSheet(
+                "QLabel#figureCaptionLabel {"
+                " background-color: #f1f3f5; color: #212529; padding: 6px 10px;"
+                " border-radius: 6px; font-size: 12px; border: 1px solid #dee2e6;"
+                " line-height: 1.35;"
+                "}"
+            )
             cap_lbl.setText("【图说明】" + cap_text)
-            cap_lbl.show()
-        else:
-            cap_lbl.hide()
-        self.canvas_display_layout.addWidget(cap_lbl)
+            cap_scroll = QtWidgets.QScrollArea()
+            cap_scroll.setWidgetResizable(True)
+            cap_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            cap_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            cap_scroll.setMaximumHeight(112)
+            cap_scroll.setWidget(cap_lbl)
+            cap_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+            self.canvas_display_layout.addSpacing(12)
+            self.canvas_display_layout.addWidget(cap_scroll)
 
         if len(self.current_figs) > 1:
             self.lbl_fig_status.setText(f"第 {self.current_fig_idx + 1} 张 / 共 {len(self.current_figs)} 张")
@@ -2067,13 +2077,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             fig1, ax1, tax1 = network.plot_xyi()
             ax1.axis('off')
             fig1.set_size_inches(10, 10)
-            ax1.set_position([0.13, 0.13, 0.62, 0.58])
-            fig1.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
+            # 底部多留白，避免顶点标签（X–Y、C–C 等）与下方「图说明」条带视觉上挤在一起
+            ax1.set_position([0.13, 0.18, 0.62, 0.56])
+            fig1.subplots_adjust(left=0.06, right=0.94, bottom=0.14, top=0.90)
             fig2, ax2, tax2 = network.plot_branch()
             ax2.axis('off')
             fig2.set_size_inches(10, 10)
-            ax2.set_position([0.13, 0.13, 0.62, 0.58])
-            fig2.subplots_adjust(left=0.06, right=0.94, bottom=0.07, top=0.90)
+            ax2.set_position([0.13, 0.18, 0.62, 0.56])
+            fig2.subplots_adjust(left=0.06, right=0.94, bottom=0.14, top=0.90)
             _style_ternary_plot(fig1, tax1)
             _style_ternary_plot(fig2, tax2)
             _polish_fractopo_ternary_labels(fig1)
@@ -2133,9 +2144,47 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             if hasattr(handle, "set_edgecolor"):
                                 handle.set_edgecolor("black")
                         leg_txts = legend.get_texts()
+                        full_title = ""
                         if leg_txts:
-                            ax.set_title(leg_txts[0].get_text(), fontsize=11, fontweight="bold", pad=14, fontfamily="DejaVu Sans")
-                        legend.set_loc("upper left")
+                            full_title = leg_txts[0].get_text()
+                            ax.set_title(
+                                full_title,
+                                fontsize=10,
+                                fontweight="bold",
+                                pad=8,
+                                fontfamily="DejaVu Sans",
+                            )
+                        # 图例改为短标签 + 单列叠放，限制在各自子图上方，避免横向伸入邻图
+                        short_labels = ("Cross-cut", "Abutting (A→B)", "Abutting (B→A)")
+                        n = min(len(handles), len(short_labels))
+                        legend.remove()
+                        new_leg = ax.legend(
+                            handles[:n],
+                            short_labels[:n],
+                            loc="lower center",
+                            bbox_to_anchor=(0.5, 1.02),
+                            transform=ax.transAxes,
+                            ncol=1,
+                            fontsize=8,
+                            frameon=True,
+                            fancybox=True,
+                            framealpha=0.95,
+                            edgecolor="#9CA3AF",
+                            handlelength=0.9,
+                            handletextpad=0.45,
+                            borderpad=0.35,
+                            labelspacing=0.35,
+                            columnspacing=0.6,
+                        )
+                        for handle, color in zip(
+                            getattr(new_leg, "legend_handles", None)
+                            or getattr(new_leg, "legendHandles", []),
+                            relationship_colors,
+                        ):
+                            if hasattr(handle, "set_facecolor"):
+                                handle.set_facecolor(color)
+                            if hasattr(handle, "set_edgecolor"):
+                                handle.set_edgecolor("black")
                     for txt in ax.texts:
                         if "trace count" in txt.get_text():
                             txt.set_bbox(dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#9CA3AF", alpha=0.95))
@@ -2152,8 +2201,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     fig._suptitle.set_y(0.96)
                     fig._suptitle.set_ha("center")
                     fig._suptitle.set_va("top")
-                fig.subplots_adjust(left=0.07, right=0.78, top=0.82, bottom=0.14, wspace=0.34)
-                fig.set_size_inches(15, 7.8)
+                # 略增子图间距与右侧留白，避免图例与 trace count 文本与邻轴重叠
+                fig.subplots_adjust(left=0.09, right=0.82, top=0.76, bottom=0.15, wspace=0.48)
+                fig.set_size_inches(16, 8.0)
             if figs:
                 _cap_rel = (
                     "交叉与相邻关系图：各子图表示两方位集之间交切（cross-cut）与不同方向邻接（abutting）的计数统计；"
