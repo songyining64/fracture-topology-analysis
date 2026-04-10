@@ -851,7 +851,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             cap_lbl.setStyleSheet(
                 "QLabel#figureCaptionLabel {"
                 " background-color: #f1f3f5; color: #212529; padding: 6px 10px;"
-                " border-radius: 6px; font-size: 12px; border: 1px solid #dee2e6;"
+                " border-radius: 4px; font-size: 11px; border: 1px solid #dee2e6;"
                 " line-height: 1.35;"
                 "}"
             )
@@ -860,10 +860,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             cap_scroll.setWidgetResizable(True)
             cap_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
             cap_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            cap_scroll.setMaximumHeight(112)
+            # 图说明区固定高度 40px，超出内容竖向滚动
+            cap_scroll.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding,
+                QtWidgets.QSizePolicy.Fixed,
+            )
+            cap_scroll.setFixedHeight(40)
             cap_scroll.setWidget(cap_lbl)
             cap_scroll.setStyleSheet("QScrollArea { background: transparent; }")
-            self.canvas_display_layout.addSpacing(12)
+            self.canvas_display_layout.addSpacing(8)
             self.canvas_display_layout.addWidget(cap_scroll)
 
         if len(self.current_figs) > 1:
@@ -2149,12 +2154,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             full_title = leg_txts[0].get_text()
                             ax.set_title(
                                 full_title,
-                                fontsize=10,
+                                fontsize=8.5,
                                 fontweight="bold",
-                                pad=8,
+                                pad=3,
                                 fontfamily="DejaVu Sans",
+                                color="#0f172a",
                             )
-                        # 图例改为短标签 + 单列叠放，限制在各自子图上方，避免横向伸入邻图
+                        # 图例：单列纵向排列（ncol=1），与早期布局一致，避免三列挤在一行里叠字
                         short_labels = ("Cross-cut", "Abutting (A→B)", "Abutting (B→A)")
                         n = min(len(handles), len(short_labels))
                         legend.remove()
@@ -2162,20 +2168,33 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             handles[:n],
                             short_labels[:n],
                             loc="lower center",
-                            bbox_to_anchor=(0.5, 1.02),
-                            transform=ax.transAxes,
+                            bbox_to_anchor=(0.5, 1.14),
+                            bbox_transform=ax.transAxes,
                             ncol=1,
-                            fontsize=8,
+                            fontsize=7.5,
                             frameon=True,
                             fancybox=True,
-                            framealpha=0.95,
-                            edgecolor="#9CA3AF",
+                            shadow=False,
+                            facecolor="#FFFFFF",
+                            framealpha=0.97,
+                            edgecolor="#CBD5E1",
                             handlelength=0.9,
-                            handletextpad=0.45,
-                            borderpad=0.35,
-                            labelspacing=0.35,
-                            columnspacing=0.6,
+                            handleheight=0.55,
+                            handletextpad=0.4,
+                            borderpad=0.26,
+                            labelspacing=0.26,
                         )
+                        leg_frame = new_leg.get_frame()
+                        if leg_frame is not None:
+                            leg_frame.set_linewidth(0.7)
+                            leg_frame.set_edgecolor("#94A3B8")
+                        for t in new_leg.get_texts():
+                            t.set_fontsize(7.5)
+                            t.set_color("#0f172a")
+                        try:
+                            new_leg.set_clip_on(False)
+                        except Exception:
+                            pass
                         for handle, color in zip(
                             getattr(new_leg, "legend_handles", None)
                             or getattr(new_leg, "legendHandles", []),
@@ -2184,30 +2203,32 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                             if hasattr(handle, "set_facecolor"):
                                 handle.set_facecolor(color)
                             if hasattr(handle, "set_edgecolor"):
-                                handle.set_edgecolor("black")
+                                handle.set_edgecolor("#1e293b")
+                            if hasattr(handle, "set_linewidth"):
+                                handle.set_linewidth(0.8)
                     for txt in ax.texts:
                         if "trace count" in txt.get_text():
                             txt.set_bbox(dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#9CA3AF", alpha=0.95))
                             txt.set_clip_on(False)
             for fig in figs:
+                # 不显示整张图顶部的工区名（如「塔里木盆地英买2」），把空间留给子图与图例
                 if hasattr(fig, "_suptitle") and fig._suptitle is not None:
-                    fig._suptitle.set_text(str(name))
-                    zh_fonts = plt.rcParams.get("font.sans-serif", [])
-                    if isinstance(zh_fonts, (list, tuple)) and len(zh_fonts) > 0:
-                        fig._suptitle.set_fontfamily(zh_fonts[0])
-                    fig._suptitle.set_fontsize(15)
-                    fig._suptitle.set_bbox(dict(boxstyle="round,pad=0.45", facecolor="white", edgecolor="#9CA3AF", alpha=0.95))
-                    fig._suptitle.set_x(0.5)
-                    fig._suptitle.set_y(0.96)
-                    fig._suptitle.set_ha("center")
-                    fig._suptitle.set_va("top")
-                # 略增子图间距与右侧留白，避免图例与 trace count 文本与邻轴重叠
-                fig.subplots_adjust(left=0.09, right=0.82, top=0.76, bottom=0.15, wspace=0.48)
-                fig.set_size_inches(16, 8.0)
+                    try:
+                        fig._suptitle.remove()
+                    except Exception:
+                        pass
+                    fig._suptitle = None
+                # 顶边多留白以免图例被裁切；底边上移（bottom 减小）使柱图整体下移、靠近下方 Qt「图说明」
+                fig.subplots_adjust(left=0.09, right=0.81, top=0.72, bottom=0.07, wspace=0.42)
+                fig.set_size_inches(10.2, 5.15)
+                for ax in fig.axes:
+                    ax.tick_params(axis="both", which="major", labelsize=7)
+                    ax.xaxis.get_label().set_fontsize(7.5)
+                    ax.yaxis.get_label().set_fontsize(7.5)
             if figs:
                 _cap_rel = (
-                    "交叉与相邻关系图：各子图表示两方位集之间交切（cross-cut）与不同方向邻接（abutting）的计数统计；"
-                    "柱色对应图例中关系类型；侧栏为 trace count。翻页可浏览不同方位集组合。"
+                    "交叉与相邻关系：各子图为两方位集交切（cross-cut）与邻接（abutting）计数；\n"
+                    "柱色为关系类型，右侧为 trace count，翻页切换方位集组合。"
                 )
                 self.embed_figure(figs, descriptions=[_cap_rel] * len(figs))
         self._run_with_network(_render)
